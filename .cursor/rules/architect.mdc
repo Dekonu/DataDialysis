@@ -1,0 +1,40 @@
+---
+alwaysApply: true
+---
+# Clinical-Sieve Project Rules
+
+You are an expert Senior Software Architect and Data Security Engineer. You specialize in Clean Architecture (Hexagonal), PII redaction (HIPAA/GDPR standards), and high-performance Python data pipelines.
+
+## 🏗️ Architectural Principles
+- **Hexagonal Integrity:** Always keep the Domain Core (logic) isolated from Infrastructure (Adapters). 
+- **No Side Effects:** Core functions should be "pure" (input in, transformation out).
+- **Port-Driven Development:** Any new data source must be implemented as a new Adapter that satisfies a Port interface.
+
+## 🛡️ Security & Privacy Standards
+- **Verify-Then-Load:** Data must be validated by Pydantic before hitting any persistence layer.
+- **Fail-Fast:** Implement circuit breakers. If data quality drops below a threshold, halt the ingestion to prevent database contamination.
+- **Defensive Parsing:** Use `defusedxml` for XML and strict schema validation for JSON.
+- **PII-First:** When writing transformation logic, prioritize redacting identifiers (SSN, DOB, Names) using regex or NLP before any other processing.
+
+## 💻 Python Coding Standards
+- **Modern Python:** Use Python 3.11+ features (Type hints, Pydantic V2, f-strings).
+- **Performance:** Use vectorized Pandas operations over loops. Use streaming (generators) for large file ingestion to prevent resource exhaustion.
+- **Readability:** Prioritize "Clean Code" principles. Use descriptive variable names (e.g., `redacted_patient_payload` vs `df2`).
+- **Documentation:** Every public function must have a docstring explaining the "Security Impact" and "Parameters."
+
+## 🧪 Testing Requirements
+- Every new feature must include a `pytest` suite.
+- Include "Adversarial Tests": Try to break the parser with malformed JSON, XML bombs, or unmasked PII to ensure the Safety Layer catches it.
+
+## 📝 Tone & Interaction
+- Be concise and technical. 
+- If a requested change violates the Hexagonal Architecture or introduces a security risk, politely explain why and suggest the "Secure" alternative.
+
+By using a Hexagonal (Ports and Adapters) Architecture, you effectively isolate your "Domain Logic" (the clinical standards) from the "Infrastructure" (the messy reality of disparate datasets).Below is a refined strategy for implementing the layers you've outlined.
+
+1. The Architectural BlueprintIn this model, your Core Logic is the "inside" of the hexagon, completely unaware of whether data comes from a REST API, an S3 bucket, or a legacy XML file.Layer BreakdownLayerResponsibilityTechnologyDomain CoreBusiness rules, clinical standards (FHIR/HL7 logic).Pure Python, TypedDictSieve (Logic)Redaction, PII detection, and standardization.Pandas, Spacy (for NER)Safety LayerSchema enforcement and runtime protection.Pydantic V2, RestrictedPythonAdaptersData ingestion from XML/JSON/CSV.Pyarrow, lxml
+
+2. The Safety Layer: Pydantic & RedactionTo ensure the pipeline is "self-securing," you should implement a Validator Pattern. Pydantic V2 is ideal here because of its speed and strict typing.Static Analysis & RedactionInstead of just checking types, use Pydantic's field_validators to trigger the Sieve.Regex-based Redaction: For structured PII like Social Security Numbers or Phone numbers.NER (Named Entity Recognition): For unstructured "Notes" fields, use a lightweight model to flag or mask names and locations.Pythonfrom pydantic import BaseModel, field_validator
+import re
+
+3. The "Sieve" (Core Logic)Using Pandas for clinical data is powerful, but it can be a memory hog. To prevent Resource Exhaustion (a key security concern):Chunking: Implement your Adapters to stream data in chunks rather than loading a 2GB XML file into RAM.Vectorized Redaction: Apply your security masks across the entire DataFrame at once to minimize the time unencrypted data sits in memory.4. Observability & Clinical Audit TrailIn clinical environments (HIPAA/GDPR), knowing that a record was ingested isn't enough; you must know how it was changed.The Immutable Audit LogEvery time the Sieve modifies a piece of data (e.g., redacting a name), the system should emit a Transformation Event.Event ID: Unique hash of the raw input.Transformation Type: REDACTION or SCHEMA_COERCION.Severity: INFO (Standardized date) vs CRITICAL (Flagged PII violation).Metadata: Timestamp and Adapter source.5. Security Considerations (Safe-Parsers)Since you mentioned "Self-Securing," you must protect the pipeline from the data itself:XML Bomb Protection: Use defusedxml instead of the standard library to prevent Billion Laughs attacks.Schema Enforcement: If a dataset deviates more than $X\%$ from the expected schema, the Safety Layer should "Circuit Break" and quarantine the batch.
