@@ -31,6 +31,14 @@ from src.domain.enums import (
 )
 from src.domain.services import RedactorService
 
+# Import context function (infrastructure, but optional - graceful degradation)
+try:
+    from src.infrastructure.redaction_context import log_redaction_if_context
+except ImportError:
+    # Fallback if infrastructure not available (e.g., in minimal tests)
+    def log_redaction_if_context(field_name: str, original_value: Optional[str], rule_triggered: str) -> None:
+        pass
+
 
 class PatientRecord(BaseModel):
     """Golden record for patient demographic information (FHIR R5 Patient resource).
@@ -316,7 +324,14 @@ class PatientRecord(BaseModel):
             return []
         if isinstance(v, str):
             v = [v]
-        return [RedactorService.redact_ssn(str(identifier)) for identifier in v]
+        result = []
+        for identifier in v:
+            original = str(identifier)
+            redacted = RedactorService.redact_ssn(original)
+            result.append(redacted)
+            if redacted != original:
+                log_redaction_if_context("identifiers", original, "SSN_PATTERN")
+        return result
     
     @field_validator("family_name", mode="before")
     @classmethod
@@ -325,7 +340,12 @@ class PatientRecord(BaseModel):
         
         Security Impact: Family name is redacted before being stored in the model.
         """
-        return RedactorService.redact_name(v)
+        original = v
+        result = RedactorService.redact_name(v)
+        # Log redaction if context available (infrastructure concern, optional)
+        if result != original:
+            log_redaction_if_context("family_name", original, "NAME_PATTERN")
+        return result
     
     @field_validator("given_names", mode="before")
     @classmethod
@@ -338,7 +358,15 @@ class PatientRecord(BaseModel):
             return []
         if isinstance(v, str):
             v = [v]
-        return [RedactorService.redact_name(str(name)) for name in v]
+        result = []
+        for name in v:
+            original = str(name)
+            redacted = RedactorService.redact_name(original)
+            result.append(redacted)
+            # Log redaction if context available
+            if redacted != original:
+                log_redaction_if_context("given_names", original, "NAME_PATTERN")
+        return result
     
     @field_validator("name_prefix", mode="before")
     @classmethod
@@ -358,7 +386,11 @@ class PatientRecord(BaseModel):
         
         Security Impact: Emergency contact name is PII and must be redacted.
         """
-        return RedactorService.redact_name(v)
+        original = v
+        result = RedactorService.redact_name(v)
+        if result != original:
+            log_redaction_if_context("emergency_contact_name", original, "NAME_PATTERN")
+        return result
     
     @field_validator("emergency_contact_phone", mode="before")
     @classmethod
@@ -367,7 +399,11 @@ class PatientRecord(BaseModel):
         
         Security Impact: Emergency contact phone is PII and must be redacted.
         """
-        return RedactorService.redact_phone(v)
+        original = v
+        result = RedactorService.redact_phone(v)
+        if result != original:
+            log_redaction_if_context("emergency_contact_phone", original, "PHONE_PATTERN")
+        return result
     
     @field_validator("fax", mode="before")
     @classmethod
@@ -376,7 +412,11 @@ class PatientRecord(BaseModel):
         
         Security Impact: Fax number is PII and must be redacted.
         """
-        return RedactorService.redact_phone(v)
+        original = v
+        result = RedactorService.redact_phone(v)
+        if result != original:
+            log_redaction_if_context("fax", original, "PHONE_PATTERN")
+        return result
     
     @field_validator("ssn", mode="before")
     @classmethod
@@ -385,7 +425,11 @@ class PatientRecord(BaseModel):
         
         Security Impact: SSN is redacted before being stored in the model.
         """
-        return RedactorService.redact_ssn(v)
+        original = v
+        result = RedactorService.redact_ssn(v)
+        if result != original:
+            log_redaction_if_context("ssn", original, "SSN_PATTERN")
+        return result
     
     @field_validator("first_name", mode="before")
     @classmethod
@@ -424,7 +468,11 @@ class PatientRecord(BaseModel):
         
         Security Impact: Phone number is redacted before being stored in the model.
         """
-        return RedactorService.redact_phone(v)
+        original = v
+        result = RedactorService.redact_phone(v)
+        if result != original:
+            log_redaction_if_context("phone", original, "PHONE_PATTERN")
+        return result
     
     @field_validator("email", mode="before")
     @classmethod
@@ -433,7 +481,11 @@ class PatientRecord(BaseModel):
         
         Security Impact: Email address is redacted before being stored in the model.
         """
-        return RedactorService.redact_email(v)
+        original = v
+        result = RedactorService.redact_email(v)
+        if result != original:
+            log_redaction_if_context("email", original, "EMAIL_PATTERN")
+        return result
     
     @field_validator("address_line1", mode="before")
     @classmethod
@@ -442,7 +494,11 @@ class PatientRecord(BaseModel):
         
         Security Impact: Address is redacted before being stored in the model.
         """
-        return RedactorService.redact_address(v)
+        original = v
+        result = RedactorService.redact_address(v)
+        if result != original:
+            log_redaction_if_context("address_line1", original, "ADDRESS_PATTERN")
+        return result
     
     @field_validator("address_line2", mode="before")
     @classmethod
@@ -451,7 +507,11 @@ class PatientRecord(BaseModel):
         
         Security Impact: Address is redacted before being stored in the model.
         """
-        return RedactorService.redact_address(v)
+        original = v
+        result = RedactorService.redact_address(v)
+        if result != original:
+            log_redaction_if_context("address_line2", original, "ADDRESS_PATTERN")
+        return result
     
     @field_validator("postal_code", mode="after")
     @classmethod
@@ -570,7 +630,11 @@ class ClinicalObservation(BaseModel):
         Security Impact: Unstructured notes are scanned and PII is redacted
         before being stored in the model.
         """
-        return RedactorService.redact_observation_notes(v)
+        original = v
+        result = RedactorService.redact_observation_notes(v)
+        if result != original:
+            log_redaction_if_context("notes", original, "OBSERVATION_NOTES_PII_DETECTION")
+        return result
     
     @field_validator("interpretation", mode="before")
     @classmethod

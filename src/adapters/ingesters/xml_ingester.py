@@ -704,6 +704,23 @@ class XMLIngester(IngestionPort):
             # Generate transformation hash for audit trail
             transformation_hash = self._generate_hash(record_data)
             
+            # Set record_id in context before creating GoldenRecord
+            # This allows validators to log redactions with the correct record_id
+            patient_id = patient.patient_id if hasattr(patient, 'patient_id') else record_data.get('patient_id')
+            if patient_id:
+                try:
+                    from src.infrastructure.redaction_context import set_redaction_context, get_redaction_context
+                    context = get_redaction_context()
+                    if context:
+                        set_redaction_context(
+                            logger=context.get('logger'),
+                            record_id=str(patient_id),
+                            source_adapter=context.get('source_adapter'),
+                            ingestion_id=context.get('ingestion_id')
+                        )
+                except (ImportError, AttributeError):
+                    pass  # Context not available - skip
+            
             # Construct GoldenRecord (final validation)
             golden_record = GoldenRecord(
                 patient=patient,

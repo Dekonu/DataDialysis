@@ -25,6 +25,7 @@ from typing import Optional
 from src.infrastructure.settings import settings
 from src.infrastructure.config_manager import get_database_config
 from src.infrastructure.redaction_logger import get_redaction_logger, reset_redaction_logger
+from src.infrastructure.redaction_context import redaction_context
 from src.infrastructure.security_report import generate_security_report, print_security_report_summary
 from src.adapters.ingesters import get_adapter
 from src.adapters.storage import DuckDBAdapter, PostgreSQLAdapter
@@ -113,8 +114,8 @@ def process_ingestion(
     circuit_breaker = None
     if settings.circuit_breaker_enabled:
         circuit_breaker_config = CircuitBreakerConfig(
-            failure_threshold=settings.circuit_breaker_threshold,
-            min_requests=settings.circuit_breaker_min_requests
+            failure_threshold_percent=settings.circuit_breaker_threshold * 100,  # Convert to percentage
+            min_records_before_check=settings.circuit_breaker_min_requests
         )
         circuit_breaker = CircuitBreaker(circuit_breaker_config)
         logger.info("Circuit breaker enabled")
@@ -126,79 +127,90 @@ def process_ingestion(
     
     logger.info(f"Starting ingestion from: {source}")
     
-    try:
-        for result in adapter.ingest(source):
-            # Check circuit breaker
-            if circuit_breaker and circuit_breaker.should_open():
-                logger.error(
-                    f"Circuit breaker opened: failure rate {circuit_breaker.get_failure_rate():.2%} "
-                    f"exceeds threshold {settings.circuit_breaker_threshold:.2%}"
-                )
-                raise RuntimeError("Circuit breaker opened - ingestion halted")
-            
-            if result.is_success():
-                # Handle DataFrame results (CSV/JSON batch processing)
-                if hasattr(result.value, 'shape'):  # pandas DataFrame
-                    df = result.value
-                    logger.info(f"Processing DataFrame batch: {len(df)} rows")
-                    
-                    # Determine table name based on columns (simplified - could be improved)
-                    if 'patient_id' in df.columns:
-                        table_name = 'patients'
-                    elif 'observation_id' in df.columns:
-                        table_name = 'observations'
-                    elif 'encounter_id' in df.columns:
-                        table_name = 'encounters'
-                    else:
-                        logger.warning(f"Unknown DataFrame structure, skipping batch")
-                        failure_count += len(df)
-                        continue
-                    
-                    persist_result = storage.persist_dataframe(df, table_name)
-                    if persist_result.is_success():
-                        success_count += persist_result.value
-                        logger.info(f"Persisted {persist_result.value} rows to {table_name}")
-                    else:
-                        failure_count += len(df)
-                        logger.error(f"Failed to persist DataFrame: {persist_result.error}")
-                
-                # Handle GoldenRecord results (XML row-by-row processing)
-                else:
-                    golden_record = result.value
-                    batch_records.append(golden_record)
-                    
-                    # Persist in batches for efficiency
-                    if len(batch_records) >= (batch_size or settings.batch_size):
-                        persist_result = storage.persist_batch(batch_records)
-                        if persist_result.is_success():
-                            success_count += len(batch_records)
-                            logger.info(f"Persisted batch of {len(batch_records)} records")
-                        else:
-                            failure_count += len(batch_records)
-                            logger.error(f"Failed to persist batch: {persist_result.error}")
-                        batch_records.clear()
-            else:
-                failure_count += 1
-                logger.warning(
-                    f"Ingestion failure: {result.error_type} - {result.error}",
-                    extra=result.error_details
-                )
-                
-                # Update circuit breaker
+    # Set redaction context for this ingestion run
+    # This context will be available to all Pydantic validators during validation
+    with redaction_context(
+        logger=redaction_logger,
+        source_adapter=adapter.adapter_name,
+        ingestion_id=ingestion_id
+    ):
+        try:
+            for result in adapter.ingest(source):
+                # Record result with circuit breaker
                 if circuit_breaker:
-                    circuit_breaker.record_failure()
+                    circuit_breaker.record_result(result)
+                    # Check if circuit breaker is open (will raise if abort_on_open=True)
+                    if circuit_breaker.is_open():
+                        stats = circuit_breaker.get_statistics()
+                        logger.error(
+                            f"Circuit breaker opened: failure rate {stats.get('failure_rate', 0):.2%} "
+                            f"exceeds threshold {circuit_breaker.config.failure_threshold_percent:.1f}%"
+                        )
+                        # CircuitBreakerOpenError will be raised by record_result if abort_on_open=True
+                
+                if result.is_success():
+                    # Handle DataFrame results (CSV/JSON batch processing)
+                    if hasattr(result.value, 'shape'):  # pandas DataFrame
+                        df = result.value
+                        logger.info(f"Processing DataFrame batch: {len(df)} rows")
+                        
+                        # Determine table name based on columns (simplified - could be improved)
+                        if 'patient_id' in df.columns:
+                            table_name = 'patients'
+                        elif 'observation_id' in df.columns:
+                            table_name = 'observations'
+                        elif 'encounter_id' in df.columns:
+                            table_name = 'encounters'
+                        else:
+                            logger.warning(f"Unknown DataFrame structure, skipping batch")
+                            failure_count += len(df)
+                            continue
+                        
+                        persist_result = storage.persist_dataframe(df, table_name)
+                        if persist_result.is_success():
+                            success_count += persist_result.value
+                            logger.info(f"Persisted {persist_result.value} rows to {table_name}")
+                        else:
+                            failure_count += len(df)
+                            logger.error(f"Failed to persist DataFrame: {persist_result.error}")
+                    
+                    # Handle GoldenRecord results (XML row-by-row processing)
+                    else:
+                        golden_record = result.value
+                        batch_records.append(golden_record)
+                        
+                        # Persist in batches for efficiency
+                        if len(batch_records) >= (batch_size or settings.batch_size):
+                            persist_result = storage.persist_batch(batch_records)
+                            if persist_result.is_success():
+                                success_count += len(batch_records)
+                                logger.info(f"Persisted batch of {len(batch_records)} records")
+                            else:
+                                failure_count += len(batch_records)
+                                logger.error(f"Failed to persist batch: {persist_result.error}")
+                            batch_records.clear()
+                else:
+                    failure_count += 1
+                    logger.warning(
+                        f"Ingestion failure: {result.error_type} - {result.error}",
+                        extra=result.error_details
+                    )
+                    
+                    # Update circuit breaker
+                    if circuit_breaker:
+                        circuit_breaker.record_failure()
+            
+            # Persist remaining records
+            if batch_records:
+                persist_result = storage.persist_batch(batch_records)
+                if persist_result.is_success():
+                    success_count += len(batch_records)
+                    logger.info(f"Persisted final batch of {len(batch_records)} records")
+                else:
+                    failure_count += len(batch_records)
+                    logger.error(f"Failed to persist final batch: {persist_result.error}")
         
-        # Persist remaining records
-        if batch_records:
-            persist_result = storage.persist_batch(batch_records)
-            if persist_result.is_success():
-                success_count += len(batch_records)
-                logger.info(f"Persisted final batch of {len(batch_records)} records")
-            else:
-                failure_count += len(batch_records)
-                logger.error(f"Failed to persist final batch: {persist_result.error}")
-    
-    except KeyboardInterrupt:
+        except KeyboardInterrupt:
         logger.warning("Ingestion interrupted by user")
         # Try to persist any remaining records
         if batch_records:
@@ -216,6 +228,11 @@ def process_ingestion(
             logger.info(f"Flushed {flush_result.value} redaction logs to storage")
         else:
             logger.warning(f"Failed to flush redaction logs: {flush_result.error}")
+    else:
+        if not redaction_logs:
+            logger.info("No redaction logs to flush (redactions may have occurred in Pydantic validators)")
+        else:
+            logger.warning("Storage adapter does not support flush_redaction_logs")
     
     return success_count, failure_count, ingestion_id
 
@@ -344,10 +361,13 @@ Examples:
                     )
                     if save_result.is_success():
                         logger.info(f"Security report saved to: {report_file}")
+                        logger.info(f"Report absolute path: {report_file.absolute()}")
                 else:
                     logger.info("Security report file saving is disabled (DD_SAVE_SECURITY_REPORT=false)")
             else:
                 logger.warning(f"Failed to generate security report: {report_result.error}")
+        else:
+            logger.warning("Storage adapter does not support security report generation")
         
         # Exit with appropriate code
         if failure_count > 0:

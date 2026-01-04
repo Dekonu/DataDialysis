@@ -102,17 +102,22 @@ def print_security_report_summary(report: dict) -> None:
     if report.get('end_timestamp'):
         print(f"Period End: {report['end_timestamp']}")
     
-    print("\nRedactions by Field:")
-    for field, count in sorted(summary.get('redactions_by_field', {}).items()):
-        print(f"  {field}: {count}")
-    
-    print("\nRedactions by Rule:")
-    for rule, count in sorted(summary.get('redactions_by_rule', {}).items()):
-        print(f"  {rule}: {count}")
-    
-    print("\nRedactions by Adapter:")
-    for adapter, count in sorted(summary.get('redactions_by_adapter', {}).items()):
-        print(f"  {adapter}: {count}")
+    if summary.get('total_redactions', 0) == 0:
+        print("\n⚠ No redaction events logged.")
+        print("  Note: Redaction logging may not be fully integrated.")
+        print("  Redactions still occur but may not be logged to the logs table.")
+    else:
+        print("\nRedactions by Field:")
+        for field, count in sorted(summary.get('redactions_by_field', {}).items()):
+            print(f"  {field}: {count}")
+        
+        print("\nRedactions by Rule:")
+        for rule, count in sorted(summary.get('redactions_by_rule', {}).items()):
+            print(f"  {rule}: {count}")
+        
+        print("\nRedactions by Adapter:")
+        for adapter, count in sorted(summary.get('redactions_by_adapter', {}).items()):
+            print(f"  {adapter}: {count}")
     
     print("\n" + "=" * 70)
 

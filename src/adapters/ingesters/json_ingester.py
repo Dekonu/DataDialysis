@@ -400,6 +400,22 @@ class JSONIngester(IngestionPort):
                     failed_indices.append(idx)
                     continue
                 
+                # Set record_id in context for this row (if available)
+                patient_id = row_dict.get('patient_id')
+                if patient_id:
+                    try:
+                        from src.infrastructure.redaction_context import set_redaction_context, get_redaction_context
+                        context = get_redaction_context()
+                        if context:
+                            set_redaction_context(
+                                logger=context.get('logger'),
+                                record_id=str(patient_id),
+                                source_adapter=context.get('source_adapter'),
+                                ingestion_id=context.get('ingestion_id')
+                            )
+                    except (ImportError, AttributeError):
+                        pass  # Context not available - skip
+                
                 # Create PatientRecord (validates and applies additional redaction via validators)
                 patient = PatientRecord(**{k: v for k, v in row_dict.items() if k in PatientRecord.model_fields})
                 
