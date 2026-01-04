@@ -1,0 +1,374 @@
+"""PII Redaction Service.
+
+This module provides the RedactorService class responsible for identifying and masking
+Personally Identifiable Information (PII) in clinical data. This service follows the
+Single Responsibility Principle by isolating all security and redaction logic from
+data models.
+
+Security Impact:
+    - Prevents PII from being persisted in unredacted form
+    - Uses regex patterns to identify structured PII (SSN, phone, email)
+    - Handles unstructured text redaction for clinical notes
+    - All redaction methods are pure functions (no side effects)
+
+Architecture:
+    - Pure domain service with zero infrastructure dependencies
+    - Stateless service that can be used across the application
+    - Follows Hexagonal Architecture: Core security logic isolated from infrastructure
+"""
+
+import re
+from datetime import date, datetime
+from typing import Optional
+
+
+class RedactorService:
+    """Service for identifying and masking PII in clinical records.
+    
+    This service provides methods to redact various types of PII including:
+    - Social Security Numbers (SSN)
+    - Phone numbers
+    - Email addresses
+    - Names (first and last)
+    - Addresses
+    - Dates of birth
+    - Unstructured text containing PII
+    
+    All methods are pure functions that take input and return redacted output
+    without side effects.
+    """
+    
+    # Regex patterns for PII detection
+    SSN_PATTERN = re.compile(r'\b\d{3}-?\d{2}-?\d{4}\b')
+    PHONE_PATTERN = re.compile(
+        r'\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b'
+    )
+    EMAIL_PATTERN = re.compile(
+        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    )
+    # Pattern for names (common first/last names - basic detection)
+    NAME_PATTERN = re.compile(
+        r'\b(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b'
+    )
+    
+    # Redaction masks
+    SSN_MASK = "***-**-****"
+    PHONE_MASK = "***-***-****"
+    EMAIL_MASK = "***@***.***"
+    NAME_MASK = "[REDACTED]"
+    ADDRESS_MASK = "[REDACTED]"
+    DATE_MASK = "****-**-**"
+    
+    @staticmethod
+    def redact_ssn(value: Optional[str]) -> Optional[str]:
+        """Redact Social Security Number.
+        
+        Security Impact: Masks SSN to prevent identity theft and HIPAA violations.
+        Handles both formatted (123-45-6789) and unformatted (123456789) SSNs.
+        
+        Parameters:
+            value: SSN string to redact (may contain dashes or spaces)
+        
+        Returns:
+            Redacted SSN string or None if input is None
+        """
+        if not value:
+            return None
+        
+        # Remove separators and validate format
+        cleaned = re.sub(r'[-\s]', '', str(value))
+        if cleaned.isdigit() and len(cleaned) == 9:
+            return RedactorService.SSN_MASK
+        
+        # If format is suspicious but contains digits, still redact
+        if RedactorService.SSN_PATTERN.search(str(value)):
+            return RedactorService.SSN_MASK
+        
+        return value
+    
+    @staticmethod
+    def redact_phone(value: Optional[str]) -> Optional[str]:
+        """Redact phone number.
+        
+        Security Impact: Masks phone numbers to prevent contact information exposure.
+        Handles various formats including (123) 456-7890, 123-456-7890, etc.
+        
+        Parameters:
+            value: Phone number string to redact
+        
+        Returns:
+            Redacted phone number string or None if input is None
+        """
+        if not value:
+            return None
+        
+        value_str = str(value)
+        if RedactorService.PHONE_PATTERN.search(value_str):
+            return RedactorService.PHONE_MASK
+        
+        return value
+    
+    @staticmethod
+    def redact_email(value: Optional[str]) -> Optional[str]:
+        """Redact email address.
+        
+        Security Impact: Masks email addresses to prevent contact information exposure
+        and reduce phishing attack vectors.
+        
+        Parameters:
+            value: Email address string to redact
+        
+        Returns:
+            Redacted email address string or None if input is None
+        """
+        if not value:
+            return None
+        
+        value_str = str(value)
+        if RedactorService.EMAIL_PATTERN.search(value_str):
+            return RedactorService.EMAIL_MASK
+        
+        return value
+    
+    @staticmethod
+    def redact_name(value: Optional[str]) -> Optional[str]:
+        """Redact person name.
+        
+        Security Impact: Masks names to prevent patient identification.
+        This is a basic implementation; for production, consider NLP-based NER.
+        
+        Parameters:
+            value: Name string to redact
+        
+        Returns:
+            Redacted name string or None if input is None
+        """
+        if not value:
+            return None
+        
+        # Simple heuristic: if it looks like a name (capitalized words), redact it
+        value_str = str(value).strip()
+        if value_str and value_str[0].isupper() and len(value_str.split()) <= 3:
+            return RedactorService.NAME_MASK
+        
+        return value
+    
+    @staticmethod
+    def redact_address(value: Optional[str]) -> Optional[str]:
+        """Redact street address.
+        
+        Security Impact: Masks addresses to prevent location-based identification.
+        
+        Parameters:
+            value: Address string to redact
+        
+        Returns:
+            Redacted address string or None if input is None
+        """
+        if not value:
+            return None
+        
+        # Addresses typically contain numbers and street names
+        value_str = str(value).strip()
+        if value_str and any(char.isdigit() for char in value_str):
+            return RedactorService.ADDRESS_MASK
+        
+        return value
+    
+    @staticmethod
+    def redact_date_of_birth(value: Optional[date]) -> Optional[date]:
+        """Redact date of birth by returning None.
+        
+        Security Impact: Removes DOB to prevent age-based identification and
+        reduce re-identification risk when combined with other data.
+        
+        Parameters:
+            value: Date of birth to redact
+        
+        Returns:
+            None (DOB is fully redacted)
+        """
+        return None
+    
+    @staticmethod
+    def redact_zip_code(value: Optional[str]) -> Optional[str]:
+        """Partially redact ZIP code (keep first 2 digits for analytics).
+        
+        Security Impact: Partially masks ZIP to balance privacy with geographic
+        analytics needs. Full ZIP can be used for re-identification.
+        
+        Parameters:
+            value: ZIP code string to redact
+        
+        Returns:
+            Partially redacted ZIP (e.g., "12***") or None if input is None
+        """
+        if not value:
+            return None
+        
+        value_str = str(value).strip()
+        # Remove dashes for processing
+        cleaned = value_str.replace("-", "")
+        
+        # Keep first 2 digits, mask the rest
+        if cleaned.isdigit() and len(cleaned) >= 5:
+            return value_str[:2] + "***"
+        
+        return value
+    
+    @staticmethod
+    def redact_unstructured_text(value: Optional[str]) -> Optional[str]:
+        """Redact PII from unstructured text (e.g., clinical notes).
+        
+        Security Impact: Scans unstructured text for PII patterns and redacts them.
+        This is a basic regex-based implementation. For production, consider
+        NLP-based Named Entity Recognition (NER) for better accuracy.
+        
+        Parameters:
+            value: Unstructured text that may contain PII
+        
+        Returns:
+            Text with PII redacted or None if input is None
+        """
+        if not value:
+            return None
+        
+        text = str(value)
+        
+        # Redact SSNs
+        text = RedactorService.SSN_PATTERN.sub(RedactorService.SSN_MASK, text)
+        
+        # Redact phone numbers
+        text = RedactorService.PHONE_PATTERN.sub(RedactorService.PHONE_MASK, text)
+        
+        # Redact email addresses
+        text = RedactorService.EMAIL_PATTERN.sub(RedactorService.EMAIL_MASK, text)
+        
+        # Note: Name redaction in unstructured text is complex and would benefit
+        # from NLP/NER. This basic implementation may miss names or over-redact.
+        # For production, integrate with SpaCy or similar NER library.
+        
+        return text
+    
+    @staticmethod
+    def redact_patient_record(patient_data: dict) -> dict:
+        """Redact all PII fields in a patient record dictionary (FHIR R5 compliant).
+        
+        Security Impact: Applies redaction to all known PII fields in a patient record.
+        This is a convenience method that applies all redaction rules at once.
+        Supports both legacy fields and FHIR R5 fields.
+        
+        Parameters:
+            patient_data: Dictionary containing patient record fields
+        
+        Returns:
+            Dictionary with all PII fields redacted
+        """
+        redacted = patient_data.copy()
+        
+        # FHIR R5 name fields
+        if "family_name" in redacted:
+            redacted["family_name"] = RedactorService.redact_name(
+                redacted.get("family_name")
+            )
+        
+        if "given_names" in redacted:
+            given_names = redacted.get("given_names", [])
+            if isinstance(given_names, list):
+                redacted["given_names"] = [
+                    RedactorService.redact_name(name) for name in given_names
+                ]
+            else:
+                redacted["given_names"] = [RedactorService.redact_name(given_names)]
+        
+        # Legacy name fields (backward compatibility)
+        if "first_name" in redacted:
+            redacted["first_name"] = RedactorService.redact_name(
+                redacted.get("first_name")
+            )
+        
+        if "last_name" in redacted:
+            redacted["last_name"] = RedactorService.redact_name(
+                redacted.get("last_name")
+            )
+        
+        # FHIR R5 identifiers
+        if "identifiers" in redacted:
+            identifiers = redacted.get("identifiers", [])
+            if isinstance(identifiers, list):
+                redacted["identifiers"] = [
+                    RedactorService.redact_ssn(str(identifier)) for identifier in identifiers
+                ]
+            else:
+                redacted["identifiers"] = [RedactorService.redact_ssn(str(identifiers))]
+        
+        # Legacy SSN field
+        if "ssn" in redacted:
+            redacted["ssn"] = RedactorService.redact_ssn(redacted.get("ssn"))
+        
+        # Date of birth
+        if "date_of_birth" in redacted:
+            dob = redacted.get("date_of_birth")
+            if isinstance(dob, (date, datetime, str)):
+                redacted["date_of_birth"] = None
+        
+        # FHIR R5 telecom fields
+        if "phone" in redacted:
+            redacted["phone"] = RedactorService.redact_phone(redacted.get("phone"))
+        
+        if "email" in redacted:
+            redacted["email"] = RedactorService.redact_email(redacted.get("email"))
+        
+        if "fax" in redacted:
+            redacted["fax"] = RedactorService.redact_phone(redacted.get("fax"))
+        
+        # FHIR R5 address fields
+        if "address_line1" in redacted:
+            redacted["address_line1"] = RedactorService.redact_address(
+                redacted.get("address_line1")
+            )
+        
+        if "address_line2" in redacted:
+            redacted["address_line2"] = RedactorService.redact_address(
+                redacted.get("address_line2")
+            )
+        
+        if "postal_code" in redacted:
+            redacted["postal_code"] = RedactorService.redact_zip_code(
+                redacted.get("postal_code")
+            )
+        
+        # Legacy zip_code field
+        if "zip_code" in redacted:
+            redacted["zip_code"] = RedactorService.redact_zip_code(
+                redacted.get("zip_code")
+            )
+        
+        # FHIR R5 emergency contact fields
+        if "emergency_contact_name" in redacted:
+            redacted["emergency_contact_name"] = RedactorService.redact_name(
+                redacted.get("emergency_contact_name")
+            )
+        
+        if "emergency_contact_phone" in redacted:
+            redacted["emergency_contact_phone"] = RedactorService.redact_phone(
+                redacted.get("emergency_contact_phone")
+            )
+        
+        return redacted
+    
+    @staticmethod
+    def redact_observation_notes(notes: Optional[str]) -> Optional[str]:
+        """Redact PII from clinical observation notes.
+        
+        Security Impact: Removes PII from unstructured clinical notes to prevent
+        patient identification through narrative text.
+        
+        Parameters:
+            notes: Clinical notes text that may contain PII
+        
+        Returns:
+            Notes with PII redacted or None if input is None
+        """
+        return RedactorService.redact_unstructured_text(notes)
+
