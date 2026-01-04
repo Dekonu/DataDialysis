@@ -195,10 +195,7 @@ def process_ingestion(
                         f"Ingestion failure: {result.error_type} - {result.error}",
                         extra=result.error_details
                     )
-                    
-                    # Update circuit breaker
-                    if circuit_breaker:
-                        circuit_breaker.record_failure()
+                    # Note: Circuit breaker is already updated at line 141 via record_result(result)
             
             # Persist remaining records
             if batch_records:

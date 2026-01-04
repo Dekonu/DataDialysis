@@ -27,6 +27,7 @@ from src.adapters.ingesters import get_adapter
 from src.adapters.storage import DuckDBAdapter, PostgreSQLAdapter
 from src.domain.ports import Result, StoragePort
 from src.domain.guardrails import CircuitBreaker, CircuitBreakerConfig
+from src.main import process_ingestion
 
 # Initialize Typer app and Rich console
 app = typer.Typer(
@@ -146,7 +147,6 @@ def ingest(
                     
                     # Save report if enabled
                     if settings.save_security_report:
-                        from src.infrastructure.settings import settings
                         report_file = Path(settings.security_report_dir) / f"security_report_{ingestion_id}.json"
                         report_file.parent.mkdir(exist_ok=True)
                         save_result = generate_security_report(
@@ -172,6 +172,9 @@ def ingest(
     except KeyboardInterrupt:
         console.print("\n[yellow]⚠[/yellow] Ingestion interrupted by user")
         raise typer.Exit(code=130)
+    except typer.Exit:
+        # Re-raise typer.Exit exceptions (they're used for normal program termination)
+        raise
     except Exception as e:
         console.print(f"\n[red]✗[/red] Ingestion failed: {str(e)}")
         if verbose:
@@ -181,9 +184,12 @@ def ingest(
     finally:
         # Clean up storage connection
         try:
-            storage.close()
-        except Exception:
-            pass
+            if 'storage' in locals():
+                storage.close()
+        except Exception as e:
+            # Log but don't fail on cleanup errors
+            if verbose:
+                console.print(f"[dim]Warning: Error during cleanup: {str(e)}[/dim]")
 
 
 @app.command()
