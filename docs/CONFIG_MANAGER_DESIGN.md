@@ -51,10 +51,11 @@ export DD_DB_PASSWORD=secret_password  # Never log this!
 
 ```python
 from src.infrastructure.config_manager import get_database_config
+from src.adapters.storage.duckdb_adapter import DuckDBAdapter
 
 # Load from environment
 db_config = get_database_config()
-adapter = DuckDBAdapter(db_path=db_config.db_path)
+adapter = DuckDBAdapter(db_config=db_config)
 ```
 
 ### Configuration File (Recommended for Development)
@@ -72,17 +73,19 @@ adapter = DuckDBAdapter(db_path=db_config.db_path)
 
 ```python
 from src.infrastructure.config_manager import ConfigManager
+from src.adapters.storage.duckdb_adapter import DuckDBAdapter
 
 # Load from file
 config = ConfigManager.from_file("config.json")
 db_config = config.get_database_config()
-adapter = DuckDBAdapter(db_path=db_config.db_path)
+adapter = DuckDBAdapter(db_config=db_config)
 ```
 
 ### PostgreSQL Example
 
 ```python
 from src.infrastructure.config_manager import ConfigManager
+from src.adapters.storage.postgresql_adapter import PostgreSQLAdapter
 
 # Set environment variables
 os.environ["DD_DB_TYPE"] = "postgresql"
@@ -95,7 +98,16 @@ os.environ["DD_DB_SSL_MODE"] = "require"
 
 config = ConfigManager.from_environment()
 db_config = config.get_database_config()
-connection_string = db_config.get_connection_string()
+
+# Create PostgreSQL adapter using DatabaseConfig (recommended)
+adapter = PostgreSQLAdapter(db_config=db_config)
+
+# Or use connection string directly (backward compatibility)
+# adapter = PostgreSQLAdapter(connection_string=db_config.get_connection_string())
+
+result = adapter.initialize_schema()
+if result.is_success():
+    result = adapter.persist(golden_record)
 ```
 
 ## Supported Database Types

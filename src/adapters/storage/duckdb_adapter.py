@@ -39,6 +39,7 @@ from src.domain.golden_record import (
     ClinicalObservation,
     EncounterRecord,
 )
+from src.infrastructure.config_manager import DatabaseConfig
 
 logger = logging.getLogger(__name__)
 
@@ -62,32 +63,65 @@ class DuckDBAdapter(StoragePort):
     
     Example Usage:
         ```python
+        # Using configuration manager (recommended)
+        from src.infrastructure.config_manager import get_database_config
+        
+        db_config = get_database_config()
+        adapter = DuckDBAdapter(db_config=db_config)
+        
+        # Or using db_path directly (backward compatibility)
         adapter = DuckDBAdapter(db_path="data/clinical.duckdb")
+        
         result = adapter.initialize_schema()
         if result.is_success():
             result = adapter.persist(golden_record)
         ```
     """
     
-    def __init__(self, db_path: str = ":memory:", config: Optional[dict] = None):
+    def __init__(
+        self,
+        db_config: Optional[DatabaseConfig] = None,
+        db_path: Optional[str] = None,
+        config: Optional[dict] = None
+    ):
         """Initialize DuckDB adapter.
         
         Parameters:
+            db_config: DatabaseConfig from configuration manager (preferred)
             db_path: Path to DuckDB database file (or ':memory:' for in-memory)
-            config: Optional configuration dictionary
+                   Deprecated: Use db_config instead
+            config: Optional configuration dictionary (deprecated)
         
         Security Impact:
             - Database path is validated to prevent path traversal attacks
             - Connection is established lazily (on first operation)
+            - Credentials are managed securely via configuration manager
+        
+        Note:
+            If both db_config and db_path are provided, db_config takes precedence.
+            If neither is provided, defaults to in-memory database.
         """
-        self.db_path = db_path
+        # Use DatabaseConfig if provided, otherwise fall back to db_path for backward compatibility
+        if db_config:
+            if db_config.db_type != "duckdb":
+                raise StorageError(
+                    f"DatabaseConfig type '{db_config.db_type}' does not match DuckDB adapter",
+                    operation="__init__"
+                )
+            self.db_path = db_config.db_path or ":memory:"
+        elif db_path:
+            self.db_path = db_path
+        else:
+            # Default to in-memory if nothing provided
+            self.db_path = ":memory:"
+        
         self.config = config or {}
         self._connection: Optional[duckdb.DuckDBPyConnection] = None
         self._initialized = False
         
         # Validate db_path to prevent path traversal
-        if db_path != ":memory:":
-            db_path_obj = Path(db_path)
+        if self.db_path != ":memory:":
+            db_path_obj = Path(self.db_path)
             if not db_path_obj.parent.exists():
                 raise StorageError(
                     f"Database directory does not exist: {db_path_obj.parent}",
