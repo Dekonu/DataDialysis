@@ -194,6 +194,10 @@ class JSONIngester(IngestionPort):
             return
         
         # Convert to DataFrame for vectorized processing
+        # Store encounters/observations by patient_id for later extraction
+        self._patient_encounters = {}  # patient_id -> list of encounter dicts
+        self._patient_observations = {}  # patient_id -> list of observation dicts
+        
         try:
             # Normalize nested JSON structure (patient, encounters, observations)
             normalized_records = []
@@ -203,6 +207,10 @@ class JSONIngester(IngestionPort):
                 if not isinstance(patient_data, dict):
                     continue  # Skip invalid records
                 
+                patient_id = patient_data.get('patient_id')
+                if not patient_id:
+                    continue  # Skip records without patient_id
+                
                 # Flatten patient data to top level
                 flat_record = patient_data.copy()
                 
@@ -210,6 +218,12 @@ class JSONIngester(IngestionPort):
                 flat_record['_source_record_index'] = len(normalized_records)
                 flat_record['_has_encounters'] = bool(record.get('encounters'))
                 flat_record['_has_observations'] = bool(record.get('observations'))
+                
+                # Store encounters and observations for this patient
+                if record.get('encounters'):
+                    self._patient_encounters[patient_id] = record.get('encounters', [])
+                if record.get('observations'):
+                    self._patient_observations[patient_id] = record.get('observations', [])
                 
                 normalized_records.append(flat_record)
             
@@ -435,6 +449,9 @@ class JSONIngester(IngestionPort):
                 # Store validated record as dict for DataFrame reconstruction
                 # Include all fields from the validated patient record
                 patient_dict = patient.model_dump(exclude_none=False)
+                # Add GoldenRecord-level fields that are needed for database persistence
+                patient_dict['source_adapter'] = golden_record.source_adapter
+                patient_dict['transformation_hash'] = golden_record.transformation_hash
                 valid_records.append(patient_dict)
                 
             except (PydanticValidationError, ValidationError, TransformationError) as e:

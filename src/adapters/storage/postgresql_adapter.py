@@ -470,7 +470,7 @@ class PostgreSQLAdapter(StoragePort):
                     emergency_contact_relationship, emergency_contact_phone, language,
                     managing_organization, ingestion_timestamp, source_adapter, transformation_hash
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (patient_id) DO UPDATE SET
                     identifiers = EXCLUDED.identifiers,
@@ -754,7 +754,7 @@ class PostgreSQLAdapter(StoragePort):
                     emergency_contact_relationship, emergency_contact_phone, language,
                     managing_organization, ingestion_timestamp, source_adapter, transformation_hash
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (patient_id) DO UPDATE SET
                     identifiers = EXCLUDED.identifiers,
@@ -980,17 +980,147 @@ class PostgreSQLAdapter(StoragePort):
             
             engine = create_engine(connection_string, pool_pre_ping=True)
             
-            # Use pandas to_sql for efficient bulk insertion
-            # This handles type conversion and array handling automatically
-            row_count = df.to_sql(
-                name=table_name,
-                con=engine,
-                if_exists='replace',  # or 'append' for incremental loading
-                index=False,
-                method='multi'  # Use multi-row insert for performance
-            )
+            # Define expected columns for each table (to filter out deprecated/extra columns)
+            table_columns = {
+                'patients': [
+                    'patient_id', 'identifiers', 'family_name', 'given_names', 'name_prefix', 'name_suffix',
+                    'date_of_birth', 'gender', 'deceased', 'deceased_date', 'marital_status',
+                    'address_line1', 'address_line2', 'city', 'state', 'postal_code', 'country',
+                    'address_use', 'phone', 'email', 'fax', 'emergency_contact_name',
+                    'emergency_contact_relationship', 'emergency_contact_phone', 'language',
+                    'managing_organization', 'ingestion_timestamp', 'source_adapter', 'transformation_hash'
+                ],
+                'encounters': [
+                    'encounter_id', 'patient_id', 'status', 'class_code', 'type', 'service_type', 'priority',
+                    'period_start', 'period_end', 'length_minutes', 'reason_code', 'diagnosis_codes',
+                    'facility_name', 'location_address', 'participant_name', 'participant_role',
+                    'service_provider', 'ingestion_timestamp', 'source_adapter', 'transformation_hash'
+                ],
+                'observations': [
+                    'observation_id', 'patient_id', 'encounter_id', 'status', 'category', 'code',
+                    'effective_date', 'issued', 'performer_name', 'value', 'unit', 'interpretation',
+                    'body_site', 'method', 'device', 'reference_range', 'notes',
+                    'ingestion_timestamp', 'source_adapter', 'transformation_hash'
+                ]
+            }
             
-            logger.info(f"Persisted {row_count} rows to table '{table_name}'")
+            # Filter DataFrame to only include columns that exist in the table schema
+            expected_cols = table_columns.get(table_name, list(df.columns))
+            available_cols = [col for col in expected_cols if col in df.columns]
+            df_filtered = df[available_cols].copy()
+            
+            # Add required NOT NULL columns if they're missing (for bulk DataFrame inserts)
+            # These are typically added during GoldenRecord creation, but DataFrames from CSV/JSON may not have them
+            from datetime import datetime
+            
+            # Get source_adapter from DataFrame if available, otherwise use default
+            source_adapter_value = 'bulk_ingestion'
+            if 'source_adapter' in df.columns and not df['source_adapter'].isna().all():
+                # Get first non-null value from original DataFrame
+                source_adapter_series = df['source_adapter'].dropna()
+                if len(source_adapter_series) > 0:
+                    source_adapter_value = str(source_adapter_series.iloc[0])
+            elif 'source_adapter' in df_filtered.columns and not df_filtered['source_adapter'].isna().all():
+                # Check filtered DataFrame if not in original
+                source_adapter_series = df_filtered['source_adapter'].dropna()
+                if len(source_adapter_series) > 0:
+                    source_adapter_value = str(source_adapter_series.iloc[0])
+            
+            required_columns = {
+                'ingestion_timestamp': datetime.now(),
+                'source_adapter': source_adapter_value,
+                'transformation_hash': None
+            }
+            
+            for col_name, default_value in required_columns.items():
+                if col_name in expected_cols and col_name not in df_filtered.columns:
+                    df_filtered[col_name] = default_value
+                    available_cols.append(col_name)
+            
+            # Define array columns for each table
+            array_columns = {
+                'patients': ['identifiers', 'given_names', 'name_prefix', 'name_suffix'],
+                'encounters': ['diagnosis_codes'],
+                'observations': []
+            }
+            table_array_cols = array_columns.get(table_name, [])
+            
+            # Process columns: convert enums to strings, but keep arrays as lists
+            for col in df_filtered.columns:
+                if col in table_array_cols:
+                    # Keep arrays as lists for PostgreSQL array columns
+                    # Convert None/NaN/empty strings to empty list
+                    def normalize_array(x):
+                        if isinstance(x, list):
+                            return x
+                        elif pd.isna(x) or x is None or x == '[]' or x == '':
+                            return []
+                        elif isinstance(x, str) and x.startswith('[') and x.endswith(']'):
+                            # Try to parse string representation of list
+                            try:
+                                import ast
+                                parsed = ast.literal_eval(x)
+                                return parsed if isinstance(parsed, list) else [parsed]
+                            except:
+                                return []
+                        else:
+                            return [x] if x is not None else []
+                    
+                    df_filtered[col] = df_filtered[col].apply(normalize_array)
+                elif df_filtered[col].dtype == 'object':
+                    # Convert enum objects to strings, but preserve lists
+                    def normalize_value(x):
+                        if isinstance(x, list):
+                            return x  # Don't convert lists
+                        elif hasattr(x, 'value'):
+                            return x.value  # Convert enum to string
+                        elif x is None or pd.isna(x):
+                            return None
+                        else:
+                            return str(x)
+                    
+                    df_filtered[col] = df_filtered[col].apply(normalize_value)
+            
+            # Use psycopg2's execute_values for efficient bulk insertion
+            # This avoids parameter limit issues and handles arrays correctly
+            from psycopg2.extras import execute_values
+            import psycopg2
+            
+            # Get connection from engine
+            conn = engine.raw_connection()
+            cursor = conn.cursor()
+            
+            try:
+                # Prepare column names and data
+                columns = list(df_filtered.columns)
+                values = [tuple(row) for row in df_filtered.values]
+                
+                # Build INSERT statement
+                columns_str = ', '.join(columns)
+                placeholders = ', '.join(['%s'] * len(columns))
+                insert_sql = f"INSERT INTO {table_name} ({columns_str}) VALUES %s"
+                
+                # Use execute_values for efficient bulk insert
+                # This handles arrays and avoids parameter limit issues
+                execute_values(
+                    cursor,
+                    insert_sql,
+                    values,
+                    template=None,
+                    page_size=1000  # Insert 1000 rows at a time
+                )
+                
+                total_rows = len(values)
+                conn.commit()
+                
+            except Exception as e:
+                conn.rollback()
+                raise
+            finally:
+                cursor.close()
+                conn.close()
+            
+            logger.info(f"Persisted {total_rows} rows to table '{table_name}'")
             
             # Log audit event
             self.log_audit_event(
@@ -999,11 +1129,11 @@ class PostgreSQLAdapter(StoragePort):
                 transformation_hash=None,
                 details={
                     "table_name": table_name,
-                    "row_count": row_count,
+                    "row_count": total_rows,
                 }
             )
             
-            return Result.success_result(row_count)
+            return Result.success_result(total_rows)
             
         except Exception as e:
             error_msg = f"Failed to persist DataFrame to {table_name}: {str(e)}"

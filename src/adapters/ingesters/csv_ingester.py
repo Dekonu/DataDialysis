@@ -532,6 +532,9 @@ class CSVIngester(IngestionPort):
                 # Store validated record as dict for DataFrame reconstruction
                 # Include all fields from the validated patient record
                 patient_dict = patient.model_dump(exclude_none=False)
+                # Add GoldenRecord-level fields that are needed for database persistence
+                patient_dict['source_adapter'] = golden_record.source_adapter
+                patient_dict['transformation_hash'] = golden_record.transformation_hash
                 valid_records.append(patient_dict)
                 
             except (PydanticValidationError, ValidationError, TransformationError) as e:

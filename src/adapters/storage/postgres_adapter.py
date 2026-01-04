@@ -440,6 +440,15 @@ class PostgresAdapter(StoragePort):
         Returns:
             Result[str]: Record identifier (patient_id) or error
         """
+        # Validate input type
+        if not isinstance(record, GoldenRecord):
+            error_msg = f"Expected GoldenRecord, got {type(record).__name__}"
+            logger.error(error_msg)
+            return Result.failure_result(
+                StorageError(error_msg, operation="persist", details={"received_type": type(record).__name__}),
+                error_type="StorageError"
+            )
+        
         conn = None
         try:
             if not self._initialized:
@@ -469,7 +478,7 @@ class PostgresAdapter(StoragePort):
                     emergency_contact_relationship, emergency_contact_phone, language,
                     managing_organization, ingestion_timestamp, source_adapter, transformation_hash
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (patient_id) DO UPDATE SET
                     identifiers = EXCLUDED.identifiers,
@@ -668,8 +677,15 @@ class PostgresAdapter(StoragePort):
                 conn.rollback()
             error_msg = f"Failed to persist record: {str(e)}"
             logger.error(error_msg, exc_info=True)
+            # Safely get patient_id for error details
+            patient_id = None
+            try:
+                if isinstance(record, GoldenRecord) and record.patient:
+                    patient_id = record.patient.patient_id
+            except Exception:
+                pass
             return Result.failure_result(
-                StorageError(error_msg, operation="persist", details={"patient_id": record.patient.patient_id}),
+                StorageError(error_msg, operation="persist", details={"patient_id": patient_id}),
                 error_type="StorageError"
             )
         finally:
@@ -753,7 +769,7 @@ class PostgresAdapter(StoragePort):
                     emergency_contact_relationship, emergency_contact_phone, language,
                     managing_organization, ingestion_timestamp, source_adapter, transformation_hash
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (patient_id) DO UPDATE SET
                     identifiers = EXCLUDED.identifiers,
@@ -934,7 +950,7 @@ class PostgresAdapter(StoragePort):
             error_msg = f"Failed to persist record in transaction: {str(e)}"
             logger.error(error_msg, exc_info=True)
             return Result.failure_result(
-                StorageError(error_msg, operation="persist", details={"patient_id": record.patient.patient_id}),
+                StorageError(error_msg, operation="persist", details={"patient_id": record.patient_id}),
                 error_type="StorageError"
             )
     
