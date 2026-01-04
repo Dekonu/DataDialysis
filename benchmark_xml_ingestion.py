@@ -247,7 +247,7 @@ def main():
     all_results = []
     
     try:
-        for test_file in test_files[]:
+        for test_file in test_files:
             try:
                 result = benchmark_file(
                     test_file,
