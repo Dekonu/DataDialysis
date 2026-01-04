@@ -19,6 +19,12 @@ from datetime import date, datetime
 from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from src.domain.enums import (
+    AdministrativeGender,
+    EncounterClass,
+    ObservationCategory,
+)
+
 
 class PatientRecord(BaseModel):
     """Golden record for patient demographic information.
@@ -47,7 +53,9 @@ class PatientRecord(BaseModel):
     last_name: Optional[str] = Field(None, description="Patient last name (PII)")
     date_of_birth: Optional[date] = Field(None, description="Date of birth (PII)")
     ssn: Optional[str] = Field(None, description="Social Security Number (PII)")
-    gender: Optional[str] = Field(None, description="Gender (M/F/O/U)")
+    gender: Optional[AdministrativeGender] = Field(
+        None, description="Gender (FHIR AdministrativeGender)"
+    )
     address_line1: Optional[str] = Field(None, description="Street address (PII)")
     address_line2: Optional[str] = Field(None, description="Address line 2 (PII)")
     city: Optional[str] = Field(None, description="City name")
@@ -56,19 +64,31 @@ class PatientRecord(BaseModel):
     phone: Optional[str] = Field(None, description="Phone number (PII)")
     email: Optional[str] = Field(None, description="Email address (PII)")
     
-    @field_validator("gender")
+    @field_validator("gender", mode="before")
     @classmethod
-    def validate_gender(cls, v: Optional[str]) -> Optional[str]:
-        """Standardize gender values."""
+    def validate_gender(cls, v) -> Optional[AdministrativeGender]:
+        """Convert string values to FHIR AdministrativeGender enum.
+        
+        Accepts various string formats and normalizes to FHIR-compliant values.
+        """
         if v is None:
             return v
-        v_upper = v.upper().strip()
-        valid_genders = {"M", "F", "O", "U", "MALE", "FEMALE", "OTHER", "UNKNOWN"}
-        if v_upper in valid_genders:
-            # Normalize to single letter
-            mapping = {"MALE": "M", "FEMALE": "F", "OTHER": "O", "UNKNOWN": "U"}
-            return mapping.get(v_upper, v_upper[0])
-        return v
+        if isinstance(v, AdministrativeGender):
+            return v
+        
+        v_str = str(v).strip().lower()
+        # Map common variations to FHIR values
+        mapping = {
+            "m": AdministrativeGender.MALE,
+            "male": AdministrativeGender.MALE,
+            "f": AdministrativeGender.FEMALE,
+            "female": AdministrativeGender.FEMALE,
+            "o": AdministrativeGender.OTHER,
+            "other": AdministrativeGender.OTHER,
+            "u": AdministrativeGender.UNKNOWN,
+            "unknown": AdministrativeGender.UNKNOWN,
+        }
+        return mapping.get(v_str, AdministrativeGender.UNKNOWN)
     
     @field_validator("state")
     @classmethod
@@ -118,12 +138,42 @@ class ClinicalObservation(BaseModel):
     observation_id: str = Field(..., description="Unique observation identifier")
     patient_id: str = Field(..., description="Reference to patient")
     encounter_id: Optional[str] = Field(None, description="Reference to encounter")
-    observation_type: str = Field(..., description="Type of observation")
+    observation_type: ObservationCategory = Field(
+        ..., description="Type of observation (FHIR ObservationCategory)"
+    )
     observation_code: Optional[str] = Field(None, description="Standardized code (LOINC/SNOMED)")
     value: Optional[str] = Field(None, description="Observation value")
     unit: Optional[str] = Field(None, description="Unit of measurement")
     effective_date: Optional[datetime] = Field(None, description="When observation was taken")
     notes: Optional[str] = Field(None, description="Clinical notes (may contain PII)")
+    
+    @field_validator("observation_type", mode="before")
+    @classmethod
+    def validate_observation_type(cls, v) -> ObservationCategory:
+        """Convert string values to FHIR ObservationCategory enum."""
+        if isinstance(v, ObservationCategory):
+            return v
+        
+        v_str = str(v).strip().lower().replace("_", "-")
+        # Map common variations to FHIR values
+        mapping = {
+            "vital-signs": ObservationCategory.VITAL_SIGNS,
+            "vital_signs": ObservationCategory.VITAL_SIGNS,
+            "vital sign": ObservationCategory.VITAL_SIGNS,
+            "laboratory": ObservationCategory.LABORATORY,
+            "lab": ObservationCategory.LABORATORY,
+            "lab_result": ObservationCategory.LABORATORY,
+            "imaging": ObservationCategory.IMAGING,
+            "procedure": ObservationCategory.PROCEDURE,
+            "survey": ObservationCategory.SURVEY,
+            "exam": ObservationCategory.EXAM,
+            "therapy": ObservationCategory.THERAPY,
+        }
+        # Try direct match first
+        try:
+            return ObservationCategory(v_str)
+        except ValueError:
+            return mapping.get(v_str, ObservationCategory.VITAL_SIGNS)
     
     model_config = ConfigDict(
         frozen=True,
@@ -149,25 +199,42 @@ class EncounterRecord(BaseModel):
     
     encounter_id: str = Field(..., description="Unique encounter identifier")
     patient_id: str = Field(..., description="Reference to patient")
-    encounter_type: str = Field(..., description="Type of encounter")
+    encounter_type: EncounterClass = Field(
+        ..., description="Type of encounter (FHIR EncounterClass)"
+    )
     start_date: Optional[datetime] = Field(None, description="Encounter start")
     end_date: Optional[datetime] = Field(None, description="Encounter end")
     facility_name: Optional[str] = Field(None, description="Facility name")
     diagnosis_codes: list[str] = Field(default_factory=list, description="Diagnosis codes")
     
-    @field_validator("encounter_type")
+    @field_validator("encounter_type", mode="before")
     @classmethod
-    def validate_encounter_type(cls, v: str) -> str:
-        """Standardize encounter types."""
-        v_upper = v.upper().strip()
-        valid_types = {
-            "INPATIENT", "OUTPATIENT", "EMERGENCY", "AMBULATORY",
-            "OBSERVATION", "URGENT_CARE", "TELEHEALTH"
+    def validate_encounter_type(cls, v) -> EncounterClass:
+        """Convert string values to FHIR EncounterClass enum.
+        
+        Accepts various string formats and normalizes to FHIR-compliant values.
+        """
+        if isinstance(v, EncounterClass):
+            return v
+        
+        v_str = str(v).strip().lower().replace("_", "-").replace(" ", "-")
+        # Map common variations to FHIR values
+        mapping = {
+            "inpatient": EncounterClass.INPATIENT,
+            "outpatient": EncounterClass.OUTPATIENT,
+            "ambulatory": EncounterClass.AMBULATORY,
+            "emergency": EncounterClass.EMERGENCY,
+            "virtual": EncounterClass.VIRTUAL,
+            "telehealth": EncounterClass.VIRTUAL,
+            "observation": EncounterClass.OBSERVATION,
+            "urgent-care": EncounterClass.URGENT_CARE,
+            "urgent_care": EncounterClass.URGENT_CARE,
         }
-        if v_upper in valid_types:
-            return v_upper
-        # If not in standard list, return normalized version
-        return v_upper.replace(" ", "_")
+        # Try direct match first
+        try:
+            return EncounterClass(v_str)
+        except ValueError:
+            return mapping.get(v_str, EncounterClass.OUTPATIENT)
     
     model_config = ConfigDict(
         frozen=True,

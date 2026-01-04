@@ -8,6 +8,11 @@ from datetime import date, datetime
 import pytest
 from pydantic import ValidationError
 
+from src.domain.enums import (
+    AdministrativeGender,
+    EncounterClass,
+    ObservationCategory,
+)
 from src.domain.golden_record import (
     PatientRecord,
     ClinicalObservation,
@@ -27,23 +32,30 @@ class TestPatientRecord:
             last_name="Doe",
             date_of_birth=date(1980, 1, 15),
             ssn="123456789",
-            gender="M",
+            gender="male",
             state="CA",
         )
         assert patient.patient_id == "P001"
         assert patient.first_name == "John"
-        assert patient.gender == "M"
+        assert patient.gender == AdministrativeGender.MALE
     
     def test_gender_normalization(self):
-        """Test that gender values are normalized correctly."""
+        """Test that gender values are normalized to FHIR AdministrativeGender."""
         patient_male = PatientRecord(patient_id="P001", gender="male")
-        assert patient_male.gender == "M"
+        assert patient_male.gender == AdministrativeGender.MALE
         
         patient_female = PatientRecord(patient_id="P002", gender="FEMALE")
-        assert patient_female.gender == "F"
+        assert patient_female.gender == AdministrativeGender.FEMALE
         
-        patient_other = PatientRecord(patient_id="P003", gender="O")
-        assert patient_other.gender == "O"
+        patient_other = PatientRecord(patient_id="P003", gender="other")
+        assert patient_other.gender == AdministrativeGender.OTHER
+        
+        patient_unknown = PatientRecord(patient_id="P004", gender="unknown")
+        assert patient_unknown.gender == AdministrativeGender.UNKNOWN
+        
+        # Test single letter abbreviations
+        patient_m = PatientRecord(patient_id="P005", gender="m")
+        assert patient_m.gender == AdministrativeGender.MALE
     
     def test_state_normalization(self):
         """Test that state codes are normalized to uppercase."""
@@ -80,15 +92,31 @@ class TestClinicalObservation:
         observation = ClinicalObservation(
             observation_id="O001",
             patient_id="P001",
-            observation_type="VITAL_SIGN",
+            observation_type="vital-signs",
             observation_code="85354-9",
             value="120/80",
             unit="mmHg",
             effective_date=datetime(2024, 1, 15, 10, 30),
         )
         assert observation.observation_id == "O001"
-        assert observation.observation_type == "VITAL_SIGN"
+        assert observation.observation_type == ObservationCategory.VITAL_SIGNS
         assert observation.value == "120/80"
+    
+    def test_observation_type_normalization(self):
+        """Test that observation types are normalized to FHIR ObservationCategory."""
+        observation_lab = ClinicalObservation(
+            observation_id="O002",
+            patient_id="P001",
+            observation_type="laboratory",
+        )
+        assert observation_lab.observation_type == ObservationCategory.LABORATORY
+        
+        observation_vital = ClinicalObservation(
+            observation_id="O003",
+            patient_id="P001",
+            observation_type="VITAL_SIGN",
+        )
+        assert observation_vital.observation_type == ObservationCategory.VITAL_SIGNS
 
 
 class TestEncounterRecord:
@@ -99,30 +127,44 @@ class TestEncounterRecord:
         encounter = EncounterRecord(
             encounter_id="E001",
             patient_id="P001",
-            encounter_type="OUTPATIENT",
+            encounter_type="outpatient",
             start_date=datetime(2024, 1, 15, 9, 0),
             end_date=datetime(2024, 1, 15, 10, 0),
             diagnosis_codes=["I10", "E11.9"],
         )
         assert encounter.encounter_id == "E001"
-        assert encounter.encounter_type == "OUTPATIENT"
+        assert encounter.encounter_type == EncounterClass.OUTPATIENT
         assert len(encounter.diagnosis_codes) == 2
     
     def test_encounter_type_normalization(self):
-        """Test that encounter types are normalized."""
+        """Test that encounter types are normalized to FHIR EncounterClass."""
         encounter = EncounterRecord(
             encounter_id="E001",
             patient_id="P001",
             encounter_type="inpatient",
         )
-        assert encounter.encounter_type == "INPATIENT"
+        assert encounter.encounter_type == EncounterClass.INPATIENT
         
         encounter2 = EncounterRecord(
             encounter_id="E002",
             patient_id="P001",
             encounter_type="urgent care",
         )
-        assert encounter2.encounter_type == "URGENT_CARE"
+        assert encounter2.encounter_type == EncounterClass.URGENT_CARE
+        
+        encounter3 = EncounterRecord(
+            encounter_id="E003",
+            patient_id="P001",
+            encounter_type="emergency",
+        )
+        assert encounter3.encounter_type == EncounterClass.EMERGENCY
+        
+        encounter4 = EncounterRecord(
+            encounter_id="E004",
+            patient_id="P001",
+            encounter_type="virtual",
+        )
+        assert encounter4.encounter_type == EncounterClass.VIRTUAL
 
 
 class TestGoldenRecord:
@@ -134,12 +176,12 @@ class TestGoldenRecord:
         encounter = EncounterRecord(
             encounter_id="E001",
             patient_id="P001",
-            encounter_type="OUTPATIENT",
+            encounter_type="outpatient",
         )
         observation = ClinicalObservation(
             observation_id="O001",
             patient_id="P001",
-            observation_type="LAB_RESULT",
+            observation_type="laboratory",
         )
         
         golden = GoldenRecord(
@@ -154,4 +196,6 @@ class TestGoldenRecord:
         assert len(golden.observations) == 1
         assert golden.source_adapter == "json_adapter"
         assert golden.ingestion_timestamp is not None
+        assert golden.encounters[0].encounter_type == EncounterClass.OUTPATIENT
+        assert golden.observations[0].observation_type == ObservationCategory.LABORATORY
 
