@@ -343,7 +343,7 @@ class DuckDBAdapter(StoragePort):
                         address_use, phone, email, fax, emergency_contact_name,
                         emergency_contact_relationship, emergency_contact_phone, language,
                         managing_organization, ingestion_timestamp, source_adapter, transformation_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, [
                     patient_dict.get('patient_id'),
                     patient_dict.get('identifiers'),
@@ -554,16 +554,58 @@ class DuckDBAdapter(StoragePort):
             
             conn = self._get_connection()
             
+            # Get table columns to ensure DataFrame columns match
+            table_columns_result = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            table_columns = [col[1] for col in table_columns_result]  # Column name is at index 1
+            
+            # Filter DataFrame to only include columns that exist in the table
+            df_columns = [col for col in df.columns if col in table_columns]
+            
+            if not df_columns:
+                raise StorageError(
+                    f"No matching columns between DataFrame and table '{table_name}'",
+                    operation="persist_dataframe",
+                    details={"df_columns": list(df.columns), "table_columns": table_columns}
+                )
+            
+            # Select only matching columns from DataFrame
+            df_filtered = df[df_columns].copy()
+            
+            # Add required NOT NULL columns if they're missing (for bulk DataFrame inserts)
+            # These are typically added during GoldenRecord creation, but DataFrames from CSV/JSON may not have them
+            from datetime import datetime
+            required_columns = {
+                'ingestion_timestamp': datetime.now(),
+                'source_adapter': 'bulk_ingestion',
+                'transformation_hash': None
+            }
+            
+            for col_name, default_value in required_columns.items():
+                if col_name in table_columns and col_name not in df_filtered.columns:
+                    df_filtered[col_name] = default_value
+                    df_columns.append(col_name)
+            
             # Use DuckDB's efficient DataFrame insertion
             # Register DataFrame as a view, then insert
-            conn.register('df_temp', df)
-            conn.execute(f"INSERT OR REPLACE INTO {table_name} SELECT * FROM df_temp")
+            conn.register('df_temp', df_filtered)
+            
+            # Build column list for INSERT statement
+            columns_str = ', '.join(df_columns)
+            conn.execute(f"INSERT OR REPLACE INTO {table_name} ({columns_str}) SELECT {columns_str} FROM df_temp")
             conn.unregister('df_temp')
             
             row_count = len(df)
             logger.info(f"Persisted {row_count} rows to table '{table_name}'")
             
             # Log audit event
+            # Get source_adapter from DataFrame if available, otherwise use default
+            source_adapter = 'bulk_ingestion'
+            if 'source_adapter' in df_filtered.columns:
+                # Get first non-null value, or use default
+                source_adapter_series = df_filtered['source_adapter'].dropna()
+                if len(source_adapter_series) > 0:
+                    source_adapter = str(source_adapter_series.iloc[0])
+            
             self.log_audit_event(
                 event_type="BULK_PERSISTENCE",
                 record_id=None,
@@ -571,6 +613,7 @@ class DuckDBAdapter(StoragePort):
                 details={
                     "table_name": table_name,
                     "row_count": row_count,
+                    "source_adapter": source_adapter,
                 }
             )
             
