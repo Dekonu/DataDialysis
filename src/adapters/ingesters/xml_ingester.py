@@ -55,6 +55,7 @@ from src.domain.golden_record import (
     ClinicalObservation,
     EncounterRecord,
 )
+from src.domain.field_mapping import FieldMapper
 
 # Configure logging for security rejections
 logger = logging.getLogger(__name__)
@@ -95,6 +96,8 @@ class XMLIngester(IngestionPort):
         self,
         config_path: Optional[str] = None,
         config_dict: Optional[Dict[str, Any]] = None,
+        field_mapping_path: Optional[str] = None,
+        field_mapping_dict: Optional[Dict[str, Any]] = None,
         max_record_size: int = 10 * 1024 * 1024,
         streaming_enabled: Optional[bool] = None,
         streaming_threshold: Optional[int] = None
@@ -104,6 +107,8 @@ class XMLIngester(IngestionPort):
         Parameters:
             config_path: Path to JSON configuration file with XPath mappings
             config_dict: Configuration dictionary (alternative to config_path)
+            field_mapping_path: Path to JSON file with field name mappings (optional)
+            field_mapping_dict: Field mapping dictionary (alternative to field_mapping_path)
             max_record_size: Maximum size of a single record in bytes (default: 10MB)
             streaming_enabled: Enable streaming mode (None = auto-detect based on file size)
             streaming_threshold: File size threshold for auto-enabling streaming (bytes)
@@ -131,6 +136,21 @@ class XMLIngester(IngestionPort):
         
         # Validate configuration structure
         self._validate_config()
+        
+        # Initialize FieldMapper with default configuration
+        # Default mappings are embedded in FieldMapper and can be overridden by field_mapping_path or field_mapping_dict
+        try:
+            self.field_mapper = FieldMapper(
+                mapping_config_path=field_mapping_path,
+                mapping_config_dict=field_mapping_dict
+            )
+        except Exception as e:
+            logger.error(
+                f"Error initializing FieldMapper: {str(e)}. "
+                "Using default field mapping configuration."
+            )
+            # Fallback to default only (no override)
+            self.field_mapper = FieldMapper()
         
         self.max_record_size = max_record_size
         self.adapter_name = "xml_ingester"
@@ -864,59 +884,69 @@ class XMLIngester(IngestionPort):
             )
     
     def _map_to_patient_record(self, record_data: dict) -> dict:
-        """Map XML record data to PatientRecord fields."""
-        patient_data = {}
+        """Map XML record data to PatientRecord fields using FieldMapper.
         
-        # Map patient identifier (support both mrn and patient_id)
-        if 'mrn' in record_data:
-            patient_data['patient_id'] = record_data['mrn']
-        elif 'patient_id' in record_data:
-            patient_data['patient_id'] = record_data['patient_id']
+        This method uses FieldMapper to transform extracted field names to
+        FHIR R5-compliant field names. FieldMapper uses default mappings
+        that can be overridden by configuration.
+        """
+        # Apply field mapping to transform extracted field names to FHIR R5 names
+        mapped_data = self.field_mapper.map_patient_fields(record_data)
         
-        # Map name fields
-        if 'patient_name' in record_data:
-            name_parts = str(record_data['patient_name']).strip().split(maxsplit=1)
-            if len(name_parts) == 2:
-                patient_data['first_name'] = name_parts[0]
-                patient_data['last_name'] = name_parts[1]
-        else:
-            if 'first_name' in record_data:
-                patient_data['first_name'] = record_data['first_name']
-            if 'last_name' in record_data:
-                patient_data['last_name'] = record_data['last_name']
+        # Handle backward compatibility: convert first_name/last_name to given_names/family_name
+        # if they weren't already mapped by FieldMapper (shouldn't happen with default config)
+        if 'first_name' in mapped_data and 'given_names' not in mapped_data:
+            first_name = mapped_data.pop('first_name')
+            if first_name:
+                mapped_data['given_names'] = [first_name] if isinstance(first_name, str) else first_name
         
-        # Map other fields
-        for field in ['date_of_birth', 'gender', 'address_line1', 'city', 'state', 'postal_code', 'phone', 'email']:
-            if field in record_data:
-                patient_data[field] = record_data[field]
+        if 'last_name' in mapped_data and 'family_name' not in mapped_data:
+            mapped_data['family_name'] = mapped_data.pop('last_name')
         
-        return patient_data
+        # Ensure given_names is a list (FHIR R5 format)
+        if 'given_names' in mapped_data and not isinstance(mapped_data['given_names'], list):
+            given_name = mapped_data['given_names']
+            mapped_data['given_names'] = [given_name] if given_name else []
+        
+        return mapped_data
     
     def _map_to_encounter_record(self, record_data: dict, patient_id: str) -> Optional[dict]:
-        """Map XML record data to EncounterRecord fields."""
+        """Map XML record data to EncounterRecord fields using FieldMapper.
+        
+        This method uses FieldMapper to transform extracted field names to
+        FHIR R5-compliant field names, then handles special cases like enum
+        conversions and date parsing.
+        """
+        # Apply field mapping to transform extracted field names to FHIR R5 names
+        mapped_data = self.field_mapper.map_encounter_fields(record_data)
+        
         encounter_data = {}
         
-        # Map patient_id (required)
+        # Map patient_id (required) - always set from parameter
         encounter_data['patient_id'] = patient_id
         
         # Map encounter_id (required) - generate if missing
-        if 'encounter_id' in record_data and record_data['encounter_id']:
-            encounter_data['encounter_id'] = str(record_data['encounter_id'])
+        if 'encounter_id' in mapped_data and mapped_data['encounter_id']:
+            encounter_data['encounter_id'] = str(mapped_data['encounter_id'])
         else:
             # Generate encounter_id from patient_id and date if available
-            if 'encounter_date' in record_data:
+            if 'period_start' in mapped_data:
                 try:
-                    date_str = str(record_data['encounter_date']).replace('-', '').replace(' ', '').replace(':', '')[:8]
+                    date_value = mapped_data['period_start']
+                    if isinstance(date_value, datetime):
+                        date_str = date_value.strftime('%Y%m%d')
+                    else:
+                        date_str = str(date_value).replace('-', '').replace(' ', '').replace(':', '')[:8]
                     encounter_data['encounter_id'] = f"{patient_id}_{date_str}"
                 except Exception:
                     return None
             else:
                 return None
         
-        # Map class_code (required)
-        if 'encounter_type' in record_data and record_data['encounter_type']:
+        # Map class_code (required) - handle enum conversion
+        if 'class_code' in mapped_data and mapped_data['class_code']:
             from src.domain.enums import EncounterClass
-            encounter_type = str(record_data['encounter_type']).lower().strip()
+            encounter_type = str(mapped_data['class_code']).lower().strip()
             type_mapping = {
                 'inpatient': EncounterClass.INPATIENT,
                 'outpatient': EncounterClass.OUTPATIENT,
@@ -935,22 +965,27 @@ class XMLIngester(IngestionPort):
             from src.domain.enums import EncounterClass
             encounter_data['class_code'] = EncounterClass.OUTPATIENT
         
-        # Map optional fields
-        if 'encounter_date' in record_data and record_data['encounter_date']:
+        # Map period_start (date parsing)
+        if 'period_start' in mapped_data and mapped_data['period_start']:
             try:
-                date_str = str(record_data['encounter_date'])
-                if 'T' in date_str or len(date_str) > 10:
-                    encounter_data['period_start'] = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-                else:
-                    from datetime import date as date_type
-                    parsed_date = date_type.fromisoformat(date_str)
-                    encounter_data['period_start'] = datetime.combine(parsed_date, datetime.min.time())
+                date_value = mapped_data['period_start']
+                if isinstance(date_value, datetime):
+                    encounter_data['period_start'] = date_value
+                elif isinstance(date_value, str):
+                    date_str = str(date_value)
+                    if 'T' in date_str or len(date_str) > 10:
+                        encounter_data['period_start'] = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                    else:
+                        from datetime import date as date_type
+                        parsed_date = date_type.fromisoformat(date_str)
+                        encounter_data['period_start'] = datetime.combine(parsed_date, datetime.min.time())
             except Exception:
                 pass
         
-        if 'encounter_status' in record_data and record_data['encounter_status']:
+        # Map status (enum conversion)
+        if 'status' in mapped_data and mapped_data['status']:
             from src.domain.enums import EncounterStatus
-            status_str = str(record_data['encounter_status']).lower().strip()
+            status_str = str(mapped_data['status']).lower().strip()
             status_mapping = {
                 'planned': EncounterStatus.PLANNED,
                 'in-progress': EncounterStatus.IN_PROGRESS,
@@ -965,29 +1000,39 @@ class XMLIngester(IngestionPort):
                 except ValueError:
                     pass
         
+        # Map other fields (pass through if already in mapped_data)
         for field in ['service_type', 'priority', 'reason_code', 'location_address', 'participant_name']:
-            if field in record_data and record_data[field]:
-                encounter_data[field] = record_data[field]
+            if field in mapped_data and mapped_data[field]:
+                encounter_data[field] = mapped_data[field]
         
-        # Map diagnosis codes
-        if 'diagnosis_codes' in record_data:
-            codes = record_data['diagnosis_codes']
+        # Map diagnosis_codes (handle list conversion)
+        # FieldMapper may have mapped primary_diagnosis_code to diagnosis_codes
+        if 'diagnosis_codes' in mapped_data:
+            codes = mapped_data['diagnosis_codes']
             encounter_data['diagnosis_codes'] = codes if isinstance(codes, list) else [codes]
+        # Also check for primary_diagnosis_code in original record_data (if not mapped by FieldMapper)
         elif 'primary_diagnosis_code' in record_data and record_data['primary_diagnosis_code']:
             encounter_data['diagnosis_codes'] = [record_data['primary_diagnosis_code']]
+        else:
+            # No diagnosis codes found - set empty list
+            encounter_data['diagnosis_codes'] = []
         
         return encounter_data
     
     def _map_to_observation_record(self, record_data: dict) -> Optional[dict]:
-        """Map XML record data to ClinicalObservation fields."""
-        observation_data = {}
+        """Map XML record data to ClinicalObservation fields using FieldMapper.
         
-        # Map observation fields
-        for field in ['observation_id', 'observation_date', 'observation_type', 'value', 'unit', 'status', 'encounter_id']:
-            if field in record_data:
-                observation_data[field] = record_data[field]
+        This method uses FieldMapper to transform extracted field names to
+        FHIR R5-compliant field names.
+        """
+        # Apply field mapping to transform extracted field names to FHIR R5 names
+        mapped_data = self.field_mapper.map_observation_fields(record_data)
         
-        return observation_data if observation_data else None
+        # Return mapped data if it contains at least observation_id (required)
+        if 'observation_id' in mapped_data or 'category' in mapped_data:
+            return mapped_data
+        
+        return None
     
     def _generate_hash(self, record_data: dict) -> str:
         """Generate hash for transformation audit trail."""

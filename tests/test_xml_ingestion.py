@@ -203,9 +203,10 @@ class TestXMLIngestion:
                 golden_record = result.value
                 patient = golden_record.patient
                 
-                # PII fields should be redacted
-                assert patient.first_name == "[REDACTED]"
-                assert patient.last_name == "[REDACTED]"
+                # PII fields should be redacted (FHIR R5 fields)
+                assert patient.family_name == "[REDACTED]"
+                assert len(patient.given_names) > 0
+                assert patient.given_names[0] == "[REDACTED]"
                 assert patient.date_of_birth is None  # DOB fully redacted
                 if patient.ssn:
                     assert patient.ssn == "***-**-****"
@@ -320,5 +321,8 @@ class TestXMLIngestion:
             if result.is_success():
                 golden_record = result.value
                 assert golden_record.patient.patient_id == "MRN999"
-                assert golden_record.patient.first_name == "[REDACTED]"
+                # Check FHIR R5 fields (family_name and given_names)
+                assert golden_record.patient.family_name == "[REDACTED]"
+                assert len(golden_record.patient.given_names) > 0
+                assert golden_record.patient.given_names[0] == "[REDACTED]"
 
