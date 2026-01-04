@@ -43,17 +43,41 @@ pyvenv.cfg
 htmlcov/
 .tox/
 .hypothesis/
+.pytest_cache/
 
 # Environment variables
 .env
 .env.local
+.env.*.local
 
 # OS
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
 
-
-# Reports, logs, and test data
+# Project-specific generated files
 reports/
+*.db
+*.duckdb
+*.sqlite
+*.sqlite3
+
+# Test data (keep structure, ignore large generated files)
+test_data/*.xml
+test_data/*.csv
+test_data/*.json
+!test_data/README.md
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
 share/
 test_data/
+reports/

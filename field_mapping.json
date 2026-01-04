@@ -1,0 +1,51 @@
+{
+  "patient": {
+    "mrn": "patient_id",
+    "patient_id": "patient_id",
+    "medical_record_number": "patient_id",
+    "patient_dob": "date_of_birth",
+    "birth_date": "date_of_birth",
+    "birthDate": "date_of_birth",
+    "dob": "date_of_birth",
+    "patient_name": {
+      "type": "split",
+      "target": ["given_names", "family_name"],
+      "separator": " ",
+      "max_splits": 1
+    },
+    "full_name": {
+      "type": "split",
+      "target": ["given_names", "family_name"],
+      "separator": " ",
+      "max_splits": 1
+    },
+    "first_name": "given_names",
+    "last_name": "family_name",
+    "zip_code": "postal_code",
+    "zip": "postal_code",
+    "postal_code": "postal_code",
+    "patient_gender": "gender",
+    "gender": "gender"
+  },
+  "encounter": {
+    "encounter_date": "period_start",
+    "admit_date": "period_start",
+    "admission_date": "period_start",
+    "start_date": "period_start",
+    "encounter_type": "class_code",
+    "visit_type": "class_code",
+    "encounter_status": "status",
+    "visit_status": "status",
+    "primary_diagnosis_code": "diagnosis_codes",
+    "dx_code": "diagnosis_codes",
+    "diagnosis_code": "diagnosis_codes"
+  },
+  "observation": {
+    "observation_type": "category",
+    "observation_code": "code",
+    "obs_code": "code",
+    "observation_date": "effective_date",
+    "obs_date": "effective_date"
+  }
+}
+

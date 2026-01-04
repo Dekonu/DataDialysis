@@ -5,9 +5,46 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "datadialysis"
 version = "1.0.0"
-description = "Self-Securing Clinical Data Ingestion Engine"
+description = "Self-Securing Clinical Data Ingestion Engine with PII Redaction and Security-First Architecture"
 readme = "README.md"
 requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "jgor", email = ""}
+]
+keywords = [
+    "data-pipeline",
+    "data-ingestion",
+    "pii-redaction",
+    "hipaa-compliance",
+    "gdpr-compliance",
+    "hexagonal-architecture",
+    "clinical-data",
+    "data-security",
+    "etl",
+    "data-validation",
+    "pydantic",
+    "duckdb",
+    "xml-parsing",
+    "streaming",
+    "circuit-breaker"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Healthcare Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Archiving",
+    "Topic :: Text Processing :: Markup :: XML",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.12.0",
     "pandas>=2.3.0",
@@ -20,6 +57,12 @@ dependencies = [
     "rich>=13.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/jgor/datadialysis"
+Documentation = "https://github.com/jgor/datadialysis#readme"
+Repository = "https://github.com/jgor/datadialysis"
+Issues = "https://github.com/jgor/datadialysis/issues"
+
 [project.scripts]
 datadialysis = "src.cli:app"
 
@@ -27,5 +70,9 @@ datadialysis = "src.cli:app"
 dev = [
     "pytest>=9.0.0",
     "hypothesis>=6.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
 ]
 

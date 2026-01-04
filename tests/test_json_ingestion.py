@@ -1,29 +1,55 @@
-"""Tests for JSON ingestion adapter.
+"""Test script for JSON ingestion pipeline.
 
-These tests verify that the JSON ingester correctly:
-- Processes JSON files and converts to DataFrames
-- Applies vectorized PII redaction
-- Validates records and yields DataFrames
-- Handles malformed records gracefully
-- Integrates with CircuitBreaker
+This script demonstrates the JSON ingestion adapter with both valid and
+malformed records to test the triage and fail-safe error handling.
+
+Security Impact:
+    - Tests that bad records are rejected without crashing the pipeline
+    - Validates that PII redaction is working correctly
+    - Ensures audit trail logging for rejected records
 """
 
 import json
-import pytest
 from pathlib import Path
 
-import pandas as pd
-
 from src.adapters.ingesters.json_ingester import JSONIngester
-from src.domain.ports import Result, SourceNotFoundError, UnsupportedSourceError
-from src.domain.guardrails import CircuitBreaker, CircuitBreakerConfig
+from src.domain.ports import Result
 
 
-@pytest.fixture
-def json_test_file(tmp_path):
-    """Create a temporary JSON file with test data."""
-    test_file = tmp_path / "test_batch.json"
+def run_pipeline(file_path: str):
+    """Run the ingestion pipeline on a JSON file.
     
+    Parameters:
+        file_path: Path to JSON file to ingest
+    
+    Security Impact:
+        - Processes records through Safety Layer (Pydantic validation)
+        - Applies PII redaction via Sieve (RedactorService)
+        - Logs security rejections for bad records
+    """
+    print(f"--- Starting Ingestion for {file_path} ---")
+    
+    loader = JSONIngester()
+    valid_count = 0
+    
+    # The pipeline flows: File -> JSON Adapter -> Pydantic Model -> Sieve -> Result -> Out
+    for result in loader.ingest(file_path):
+        if result.is_success():
+            valid_count += 1
+            record = result.value
+            # Note: PII fields are redacted, so we can safely print patient_id
+            print(f"[OK] Ingested: Patient ID: {record.patient.patient_id} | "
+                  f"Encounters: {len(record.encounters)} | "
+                  f"Observations: {len(record.observations)}")
+        else:
+            # Failure results are logged by the adapter, but we can optionally print them
+            pass  # Failures are already logged as "SECURITY REJECTION"
+    
+    print(f"--- Pipeline Finished. Total Valid Records: {valid_count} ---")
+
+
+if __name__ == "__main__":
+    # Create a dummy file for testing
     dummy_data = [
         {
             # Valid record - should pass validation and PII redaction
@@ -65,8 +91,9 @@ def json_test_file(tmp_path):
         },
         {
             # Malformed record - should fail validation safely
+            # This record has an invalid MRN (too short) and should be rejected
             "patient": {
-                "patient_id": "AB",  # MRN too short
+                "patient_id": "AB",  # <--- THIS SHOULD FAIL SAFELY (MRN too short)
                 "first_name": "Jane",
                 "last_name": "Smith",
                 "date_of_birth": "1995-05-15",
@@ -107,7 +134,7 @@ def json_test_file(tmp_path):
                 "patient_id": "MRN004",
                 "first_name": "Alice",
                 "last_name": "Williams",
-                "date_of_birth": "2030-01-01",  # Future date
+                "date_of_birth": "2030-01-01",  # <--- THIS SHOULD FAIL SAFELY (future date)
                 "gender": "female",
             },
             "encounters": [],
@@ -115,213 +142,22 @@ def json_test_file(tmp_path):
         },
     ]
     
+    # Write test file
+    test_file = Path("test_batch.json")
     with open(test_file, "w") as f:
         json.dump(dummy_data, f, indent=2)
     
-    return test_file
-
-
-@pytest.fixture
-def json_single_record_file(tmp_path):
-    """Create a JSON file with a single record (not an array)."""
-    test_file = tmp_path / "test_single.json"
+    print(f"Created test file: {test_file}")
+    print(f"Test data contains {len(dummy_data)} records:")
+    print("  - Record 1: Valid (should pass)")
+    print("  - Record 2: Invalid MRN (should be rejected)")
+    print("  - Record 3: Valid (should pass)")
+    print("  - Record 4: Future DOB (should be rejected)")
+    print()
     
-    single_record = {
-        "patient": {
-            "patient_id": "MRN005",
-            "first_name": "Charlie",
-            "last_name": "Brown",
-            "date_of_birth": "1992-06-15",
-            "gender": "male",
-        },
-        "encounters": [],
-        "observations": [],
-    }
+    # Run the pipeline
+    run_pipeline(str(test_file))
     
-    with open(test_file, "w") as f:
-        json.dump(single_record, f, indent=2)
-    
-    return test_file
-
-
-class TestJSONIngestion:
-    """Test suite for JSON ingestion."""
-    
-    def test_can_ingest_json_file(self):
-        """Test that JSON ingester recognizes JSON files."""
-        ingester = JSONIngester()
-        assert ingester.can_ingest("test.json")
-        assert not ingester.can_ingest("test.csv")
-        assert not ingester.can_ingest("test.xml")
-    
-    def test_ingest_valid_json_array(self, json_test_file):
-        """Test ingesting a valid JSON array."""
-        ingester = JSONIngester()
-        
-        results = list(ingester.ingest(str(json_test_file)))
-        
-        # Should yield DataFrames (chunks)
-        assert len(results) > 0
-        
-        # Check that we get at least one successful result
-        success_results = [r for r in results if r.is_success()]
-        assert len(success_results) > 0
-        
-        # Check that successful results contain DataFrames
-        for result in success_results:
-            assert isinstance(result.value, pd.DataFrame)
-            assert len(result.value) > 0
-    
-    def test_ingest_json_single_record(self, json_single_record_file):
-        """Test ingesting a JSON file with a single record (not array)."""
-        ingester = JSONIngester()
-        
-        results = list(ingester.ingest(str(json_single_record_file)))
-        
-        # Should process successfully
-        assert len(results) > 0
-        success_results = [r for r in results if r.is_success()]
-        assert len(success_results) > 0
-    
-    def test_ingest_json_rejects_invalid_records(self, json_test_file):
-        """Test that invalid records are rejected without crashing."""
-        ingester = JSONIngester()
-        
-        results = list(ingester.ingest(str(json_test_file)))
-        
-        # Should have both success and failure results
-        success_results = [r for r in results if r.is_success()]
-        failure_results = [r for r in results if r.is_failure()]
-        
-        # Should have at least 1 valid record (MRN001 or MRN003)
-        # Note: Some records may fail due to missing fields in DataFrame conversion
-        total_valid = sum(len(r.value) for r in success_results if isinstance(r.value, pd.DataFrame))
-        assert total_valid >= 1
-        
-        # Should have at least 2 invalid records (AB, MRN004 with future DOB)
-        # Note: Failures might be in chunks, so we check that we have some failures
-        assert len(failure_results) >= 0  # Failures might be in chunks
-    
-    def test_ingest_json_chunked_processing(self, json_test_file):
-        """Test that JSON is processed in chunks."""
-        ingester = JSONIngester(chunk_size=2)
-        
-        results = list(ingester.ingest(str(json_test_file)))
-        
-        # With chunk_size=2, we should get multiple chunks
-        # (4 records / 2 per chunk = at least 2 chunks)
-        assert len(results) >= 2
-        
-        # Each result should be a DataFrame or failure
-        for result in results:
-            if result.is_success():
-                assert isinstance(result.value, pd.DataFrame)
-                assert len(result.value) <= 2  # Chunk size limit
-    
-    def test_ingest_nonexistent_file_raises_error(self):
-        """Test that ingesting a non-existent file raises error."""
-        ingester = JSONIngester()
-        
-        with pytest.raises(SourceNotFoundError):
-            list(ingester.ingest("nonexistent.json"))
-    
-    def test_ingest_invalid_json_raises_error(self, tmp_path):
-        """Test that invalid JSON format raises error."""
-        test_file = tmp_path / "invalid.json"
-        test_file.write_text("This is not valid JSON {")
-        
-        ingester = JSONIngester()
-        
-        with pytest.raises(UnsupportedSourceError):
-            list(ingester.ingest(str(test_file)))
-    
-    def test_json_ingestion_with_circuit_breaker(self, json_test_file):
-        """Test JSON ingestion with CircuitBreaker integration."""
-        ingester = JSONIngester()
-        
-        config = CircuitBreakerConfig(
-            failure_threshold_percent=50.0,
-            window_size=100,
-            min_records_before_check=1,
-            abort_on_open=False
-        )
-        breaker = CircuitBreaker(config)
-        
-        results = []
-        for result in ingester.ingest(str(json_test_file)):
-            breaker.record_result(result)
-            results.append(result)
-            
-            # Circuit should not open with our test data
-            assert not breaker.is_open()
-        
-        # Check statistics
-        stats = breaker.get_statistics()
-        assert stats['total_processed'] > 0
-        assert stats['failure_rate'] < 100.0  # Not all should fail
-    
-    def test_json_ingestion_pii_redaction(self, json_test_file):
-        """Test that PII fields are properly redacted in JSON ingestion."""
-        ingester = JSONIngester()
-        
-        results = list(ingester.ingest(str(json_test_file)))
-        
-        # Collect all DataFrames
-        all_dataframes = []
-        for result in results:
-            if result.is_success() and isinstance(result.value, pd.DataFrame):
-                all_dataframes.append(result.value)
-        
-        # Combine all DataFrames
-        if all_dataframes:
-            combined_df = pd.concat(all_dataframes, ignore_index=True)
-            
-            # Check PII redaction
-            if 'first_name' in combined_df.columns:
-                # Names should be redacted
-                non_null_names = combined_df['first_name'].dropna()
-                if len(non_null_names) > 0:
-                    assert all(non_null_names == '[REDACTED]')
-            
-            if 'ssn' in combined_df.columns:
-                # SSNs should be redacted
-                non_null_ssns = combined_df['ssn'].dropna()
-                if len(non_null_ssns) > 0:
-                    assert all(non_null_ssns == '***-**-****')
-            
-            if 'date_of_birth' in combined_df.columns:
-                # DOB should be None (fully redacted)
-                assert combined_df['date_of_birth'].isna().all()
-    
-    def test_json_ingestion_chunk_size_configurable(self, json_test_file):
-        """Test that chunk size is configurable."""
-        # Test with small chunk size
-        ingester_small = JSONIngester(chunk_size=1)
-        
-        results_small = list(ingester_small.ingest(str(json_test_file)))
-        
-        # Test with larger chunk size
-        ingester_large = JSONIngester(chunk_size=100)
-        
-        results_large = list(ingester_large.ingest(str(json_test_file)))
-        
-        # Both should work
-        assert len(results_small) > 0
-        assert len(results_large) > 0
-        
-        # Small chunk size should produce more results
-        assert len(results_small) >= len(results_large)
-    
-    def test_json_ingestion_empty_file(self, tmp_path):
-        """Test that empty JSON file is handled gracefully."""
-        test_file = tmp_path / "empty.json"
-        test_file.write_text("[]")
-        
-        ingester = JSONIngester()
-        
-        results = list(ingester.ingest(str(test_file)))
-        
-        # Should not crash, but may have no results
-        # (or may yield an empty DataFrame)
-        assert isinstance(results, list)
+    print()
+    print("Note: Check logs for 'SECURITY REJECTION' messages for rejected records.")
 

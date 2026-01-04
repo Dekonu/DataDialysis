@@ -1,6 +1,26 @@
 # 🛡️ Clinical-Sieve: Self-Securing Data Ingestion Engine
 
+<div align="center">
+
+**A production-ready, security-first data pipeline for ingesting clinical and sensitive data with automatic PII redaction, schema validation, and threat protection.**
+
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+
+</div>
+
+---
+
 A **"Safety-First"** data pipeline designed to ingest disparate clinical-style datasets while automatically redacting PII (Personally Identifiable Information) and enforcing schema strictness before data ever touches a persistent database.
+
+**Key Features:**
+- 🔒 **Automatic PII Redaction** - HIPAA/GDPR compliant with audit trails
+- 🛡️ **Security-First Architecture** - Protection against XML attacks, injection, and resource exhaustion
+- 🏗️ **Hexagonal Architecture** - Clean separation of concerns, highly testable
+- ⚡ **High Performance** - Streaming processing for large files, vectorized operations
+- ✅ **Strict Validation** - Pydantic V2 schemas with fail-fast error handling
+- 🔄 **Circuit Breaker** - Automatic quality gates to prevent bad data ingestion
 
 ## 🚀 Quick Start
 
@@ -151,10 +171,12 @@ Database (DuckDB/PostgreSQL)
 
 ## 📖 Documentation
 
-- **[THREAT_MODEL.md](THREAT_MODEL.md)** - Comprehensive threat model and security architecture
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Comprehensive architecture overview and design decisions
+- **[THREAT_MODEL.md](THREAT_MODEL.md)** - Detailed threat model and security architecture
 - **[docs/XML_STREAMING_DESIGN.md](docs/XML_STREAMING_DESIGN.md)** - XML streaming implementation details
 - **[docs/REDACTION_LOGGING.md](docs/REDACTION_LOGGING.md)** - PII redaction and audit trail design
 - **[docs/CONFIG_MANAGER_DESIGN.md](docs/CONFIG_MANAGER_DESIGN.md)** - Configuration management
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** - Guidelines for contributing to the project
 
 ---
 
@@ -218,7 +240,7 @@ Generate test files and benchmark performance:
 
 ```bash
 # Generate test XML files (1MB, 5MB, 10MB, 25MB, 50MB, 75MB, 100MB)
-python generate_xml_test_files.py
+python scripts/generate_xml_test_files.py
 
 # Run benchmarks
 datadialysis benchmark test_data/ xml_config.json --iterations 3
@@ -302,11 +324,14 @@ for result in adapter.ingest("data/patients.csv"):
 
 ## 🤝 Contributing
 
-This is a security-critical system. All contributions must:
+We welcome contributions! This is a security-critical system, so please review our [Contributing Guidelines](CONTRIBUTING.md) before submitting PRs.
+
+**Key Requirements:**
 - Include tests (especially adversarial tests)
 - Document security impact
 - Follow Hexagonal Architecture principles
 - Maintain backward compatibility
+- Update documentation for new features
 
 ---
 
@@ -325,5 +350,8 @@ See [LICENSE](LICENSE) file for details.
 
 ---
 
-**Last Updated:** 2025-01-XX  
-**Version:** 1.0.0
+---
+
+**Version:** 1.0.0 | **Last Updated:** January 2026
+
+> **Note:** This project demonstrates production-ready patterns for secure data pipelines, including Hexagonal Architecture, PII redaction, threat protection, and comprehensive testing strategies. It serves as a reference implementation for building secure, maintainable data ingestion systems.
