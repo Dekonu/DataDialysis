@@ -10,7 +10,7 @@ Security Impact:
 """
 
 import logging
-from src.adapters.json_ingester import JSONIngester
+from src.adapters.ingesters.json_ingester import JSONIngester
 from src.domain.guardrails import CircuitBreaker, CircuitBreakerConfig, CircuitBreakerOpenError
 
 # Configure logging to see circuit breaker messages

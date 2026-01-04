@@ -13,7 +13,7 @@ import csv
 from pathlib import Path
 import logging
 
-from src.adapters.csv_ingester import CSVIngester
+from src.adapters.ingesters.csv_ingester import CSVIngester
 from src.domain.ports import Result
 
 # Configure logging to show security rejections

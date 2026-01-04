@@ -454,3 +454,192 @@ class AsyncIngestionPort(ABC):
         """
         return None
 
+
+# ============================================================================
+# Storage Ports
+# ============================================================================
+
+class StoragePort(ABC):
+    """Abstract contract for data persistence adapters.
+    
+    This port defines how the Domain Core wants to persist validated GoldenRecords,
+    regardless of whether storage is DuckDB, PostgreSQL, S3, or any other backend.
+    
+    Key Principles:
+        - Immutable: Records are append-only (audit trail requirement)
+        - Transactional: Batch operations are atomic
+        - Observable: All operations emit audit events
+        - Fail-safe: Invalid records are rejected before persistence
+    
+    Security Impact:
+        - Only validated GoldenRecord instances can be persisted
+        - All persistence operations are logged for audit trail
+        - Connection credentials are managed securely via configuration
+    
+    Example Usage:
+        ```python
+        class DuckDBAdapter(StoragePort):
+            def persist(self, record: GoldenRecord) -> Result[str]:
+                # Store record, return record_id
+                ...
+        
+        adapter = DuckDBAdapter(config)
+        result = adapter.persist(golden_record)
+        if result.is_success():
+            record_id = result.value
+        ```
+    """
+    
+    @abstractmethod
+    def persist(self, record: GoldenRecord) -> Result[str]:
+        """Persist a single GoldenRecord to storage.
+        
+        This method stores a validated, PII-redacted record and returns
+        a unique identifier for the persisted record.
+        
+        Parameters:
+            record: Validated GoldenRecord instance (PII already redacted)
+        
+        Returns:
+            Result[str]: Result object containing either:
+                - Success: Unique record identifier (record_id)
+                - Failure: Error information (error message, type, details)
+        
+        Raises:
+            ValidationError: If record fails final validation before persistence
+            StorageError: If storage operation fails (connection, disk, etc.)
+        
+        Security Impact:
+            - Record must be validated before persistence
+            - Operation is logged for audit trail
+            - Returns Result type for error handling without exceptions
+        """
+        pass
+    
+    @abstractmethod
+    def persist_batch(self, records: list[GoldenRecord]) -> Result[list[str]]:
+        """Persist multiple GoldenRecords in a single transaction.
+        
+        This method stores multiple validated records atomically. If any
+        record fails, the entire batch is rolled back.
+        
+        Parameters:
+            records: List of validated GoldenRecord instances
+        
+        Returns:
+            Result[list[str]]: Result object containing either:
+                - Success: List of unique record identifiers
+                - Failure: Error information (error message, type, details)
+        
+        Raises:
+            ValidationError: If any record fails validation
+            StorageError: If storage operation fails
+        
+        Security Impact:
+            - All records must be validated before persistence
+            - Batch operation is atomic (all-or-nothing)
+            - Operation is logged for audit trail
+        """
+        pass
+    
+    @abstractmethod
+    def persist_dataframe(self, df: 'pd.DataFrame', table_name: str) -> Result[int]:
+        """Persist a pandas DataFrame directly to a table.
+        
+        This method enables efficient bulk loading of validated DataFrames
+        (e.g., from CSV/JSON batch ingestion) without row-by-row processing.
+        
+        Parameters:
+            df: Validated pandas DataFrame (PII already redacted)
+            table_name: Target table name (e.g., 'patients', 'observations')
+        
+        Returns:
+            Result[int]: Result object containing either:
+                - Success: Number of rows persisted
+                - Failure: Error information (error message, type, details)
+        
+        Raises:
+            ValidationError: If DataFrame schema doesn't match expected format
+            StorageError: If storage operation fails
+        
+        Security Impact:
+            - DataFrame must be validated before persistence
+            - Bulk operation is logged for audit trail
+        """
+        pass
+    
+    @abstractmethod
+    def log_audit_event(
+        self,
+        event_type: str,
+        record_id: Optional[str],
+        transformation_hash: Optional[str],
+        details: Optional[dict] = None
+    ) -> Result[str]:
+        """Log an audit trail event for compliance and observability.
+        
+        This method creates an immutable audit log entry for every transformation,
+        redaction, or persistence operation. Required for HIPAA/GDPR compliance.
+        
+        Parameters:
+            event_type: Type of event (e.g., 'REDACTION', 'SCHEMA_COERCION', 'PERSISTENCE')
+            record_id: Unique identifier of the affected record (if applicable)
+            transformation_hash: Hash of original data for traceability
+            details: Additional event metadata (source, adapter, field_changes, etc.)
+        
+        Returns:
+            Result[str]: Result object containing either:
+                - Success: Unique audit event identifier
+                - Failure: Error information
+        
+        Security Impact:
+            - Audit logs are immutable and tamper-proof
+            - All PII redactions are logged for compliance
+            - Enables forensic analysis of data transformations
+        """
+        pass
+    
+    @abstractmethod
+    def initialize_schema(self) -> Result[None]:
+        """Initialize database schema (tables, indexes, constraints).
+        
+        This method creates the necessary database structure for storing
+        GoldenRecords and audit logs. Should be idempotent (safe to call multiple times).
+        
+        Returns:
+            Result[None]: Result object indicating success or failure
+        
+        Raises:
+            StorageError: If schema initialization fails
+        
+        Security Impact:
+            - Schema enforces data integrity constraints
+            - Indexes optimize query performance
+            - Should be called once at application startup
+        """
+        pass
+    
+    def close(self) -> None:
+        """Close storage connection and release resources.
+        
+        This method should be called when the storage adapter is no longer needed.
+        Default implementation does nothing; adapters can override if needed.
+        """
+        pass
+
+
+class StorageError(IngestionError):
+    """Raised when storage operations fail.
+    
+    This exception indicates that a persistence operation could not be completed
+    (connection error, disk full, constraint violation, etc.).
+    
+    Attributes:
+        operation: The storage operation that failed (e.g., 'persist', 'persist_batch')
+        details: Additional error context
+    """
+    
+    def __init__(self, message: str, operation: Optional[str] = None, details: Optional[dict] = None):
+        super().__init__(message)
+        self.operation = operation
+        self.details = details or {}

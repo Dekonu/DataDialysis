@@ -12,7 +12,7 @@ Security Impact:
 import json
 from pathlib import Path
 
-from src.adapters.json_ingester import JSONIngester
+from src.adapters.ingesters.json_ingester import JSONIngester
 from src.domain.ports import Result
 
 

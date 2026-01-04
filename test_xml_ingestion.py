@@ -13,7 +13,7 @@ Security Impact:
 import json
 from pathlib import Path
 
-from src.adapters.xml_ingester import XMLIngester
+from src.adapters.ingesters.xml_ingester import XMLIngester
 from src.domain.ports import Result
 
 

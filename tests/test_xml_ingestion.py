@@ -12,7 +12,7 @@ import json
 import pytest
 from pathlib import Path
 
-from src.adapters.xml_ingester import XMLIngester
+from src.adapters.ingesters.xml_ingester import XMLIngester
 from src.domain.ports import Result, SourceNotFoundError, UnsupportedSourceError
 from src.domain.guardrails import CircuitBreaker, CircuitBreakerConfig
 from src.domain.golden_record import GoldenRecord

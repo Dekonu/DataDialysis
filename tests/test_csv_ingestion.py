@@ -15,7 +15,7 @@ from typing import Optional
 
 import pandas as pd
 
-from src.adapters.csv_ingester import CSVIngester
+from src.adapters.ingesters.csv_ingester import CSVIngester
 from src.domain.ports import Result, SourceNotFoundError, UnsupportedSourceError
 from src.domain.guardrails import CircuitBreaker, CircuitBreakerConfig
 

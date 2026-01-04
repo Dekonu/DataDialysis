@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.adapters.json_ingester import JSONIngester
+from src.adapters.ingesters.json_ingester import JSONIngester
 from src.domain.ports import Result, SourceNotFoundError, UnsupportedSourceError
 from src.domain.guardrails import CircuitBreaker, CircuitBreakerConfig
 
