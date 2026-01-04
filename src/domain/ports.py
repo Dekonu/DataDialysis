@@ -16,10 +16,112 @@ Architecture:
 """
 
 from abc import ABC, abstractmethod
-from typing import Iterator, Optional, AsyncIterator
+from typing import Iterator, Optional, AsyncIterator, Generic, TypeVar, Union
 from pathlib import Path
+from dataclasses import dataclass
 
 from src.domain.golden_record import GoldenRecord
+
+# Type variable for Result generic
+T = TypeVar('T')
+
+
+# ============================================================================
+# Result Type for Success/Failure Communication
+# ============================================================================
+
+@dataclass(frozen=True)
+class Result(Generic[T]):
+    """Result type for communicating success or failure without exceptions.
+    
+    This type enables CircuitBreaker and other guardrails to monitor
+    failure rates without relying on exception handling. It follows the
+    functional programming pattern of explicit error handling.
+    
+    Attributes:
+        success: True if the operation succeeded, False otherwise
+        value: The successful result value (only present if success=True)
+        error: Error information (only present if success=False)
+        error_type: Type of error (ValidationError, TransformationError, etc.)
+        error_details: Additional error context (source, record_index, etc.)
+    
+    Example:
+        ```python
+        # Success case
+        result = Result.success(golden_record)
+        if result.success:
+            process(result.value)
+        
+        # Failure case
+        result = Result.failure(
+            ValidationError("Invalid MRN"),
+            error_type="ValidationError",
+            error_details={"source": "data.json", "record_index": 5}
+        )
+        if not result.success:
+            log_error(result.error, result.error_details)
+        ```
+    """
+    
+    success: bool
+    value: Optional[T] = None
+    error: Optional[str] = None
+    error_type: Optional[str] = None
+    error_details: Optional[dict] = None
+    
+    @classmethod
+    def success_result(cls, value: T) -> 'Result[T]':
+        """Create a successful result.
+        
+        Parameters:
+            value: The successful result value
+        
+        Returns:
+            Result: Success result with the value
+        """
+        return cls(
+            success=True,
+            value=value,
+            error=None,
+            error_type=None,
+            error_details=None
+        )
+    
+    @classmethod
+    def failure_result(
+        cls,
+        error: Union[str, Exception],
+        error_type: Optional[str] = None,
+        error_details: Optional[dict] = None
+    ) -> 'Result[T]':
+        """Create a failure result.
+        
+        Parameters:
+            error: Error message or exception
+            error_type: Type of error (e.g., "ValidationError", "TransformationError")
+            error_details: Additional context (source, record_index, etc.)
+        
+        Returns:
+            Result: Failure result with error information
+        """
+        error_message = str(error) if isinstance(error, Exception) else error
+        error_type_name = error_type or (type(error).__name__ if isinstance(error, Exception) else "UnknownError")
+        
+        return cls(
+            success=False,
+            value=None,
+            error=error_message,
+            error_type=error_type_name,
+            error_details=error_details or {}
+        )
+    
+    def is_success(self) -> bool:
+        """Check if result is successful."""
+        return self.success
+    
+    def is_failure(self) -> bool:
+        """Check if result is a failure."""
+        return not self.success
 
 
 # ============================================================================
@@ -133,8 +235,8 @@ class IngestionPort(ABC):
     """
     
     @abstractmethod
-    def ingest(self, source: str) -> Iterator[GoldenRecord]:
-        """Ingest data from a source and yield validated GoldenRecord objects.
+    def ingest(self, source: str) -> Iterator[Result[GoldenRecord]]:
+        """Ingest data from a source and yield Result objects containing GoldenRecord.
         
         This method is the primary entry point for data ingestion. Adapters must:
         1. Parse the source (file, URL, stream, etc.)
@@ -142,31 +244,36 @@ class IngestionPort(ABC):
         3. Apply PII redaction via RedactorService
         4. Validate using Pydantic (Safety Layer)
         5. Construct GoldenRecord instances
-        6. Yield records one-by-one (streaming)
+        6. Yield Result objects one-by-one (streaming)
         
         Parameters:
             source: Source identifier (file path, URL, connection string, etc.)
                    The format is adapter-specific but typically a string path or URI.
         
         Yields:
-            GoldenRecord: Validated, PII-redacted golden record ready for persistence.
-                         Each record has been through the Safety Layer and Sieve.
+            Result[GoldenRecord]: Result object containing either:
+                - Success: Validated, PII-redacted golden record ready for persistence
+                - Failure: Error information (error message, type, details)
         
         Raises:
             SourceNotFoundError: If source file/URL doesn't exist or cannot be accessed
-            ValidationError: If data cannot be validated or transformed
-            TransformationError: If data transformation fails
             UnsupportedSourceError: If source format is invalid or unsupported
             IOError: If source cannot be read (permissions, network, etc.)
         
         Security Impact:
-            - Must redact all PII before yielding GoldenRecord
+            - Must redact all PII before yielding successful GoldenRecord
             - Must validate schema before yielding (fail-fast)
             - Should log transformation events for audit trail
+            - Failures are communicated via Result, not exceptions (enables CircuitBreaker)
         
         Memory Impact:
             - Uses Iterator pattern to stream records, preventing memory exhaustion
             - Adapters should process records incrementally, not load entire dataset
+        
+        Note:
+            Individual record validation/transformation errors should be returned
+            as Result.failure_result(), not raised as exceptions. This enables
+            CircuitBreaker and other guardrails to monitor failure rates.
         """
         pass
     
@@ -255,7 +362,7 @@ class AsyncIngestionPort(ABC):
     """
     
     @abstractmethod
-    async def ingest(self, source: str) -> AsyncIterator[GoldenRecord]:
+    async def ingest(self, source: str) -> AsyncIterator[Result[GoldenRecord]]:
         """Ingest data from a source asynchronously and yield validated GoldenRecord objects.
         
         This method is the primary entry point for async data ingestion. Adapters must:
@@ -271,8 +378,9 @@ class AsyncIngestionPort(ABC):
                    The format is adapter-specific but typically a string path or URI.
         
         Yields:
-            GoldenRecord: Validated, PII-redacted golden record ready for persistence.
-                         Each record has been through the Safety Layer and Sieve.
+            Result[GoldenRecord]: Result object containing either:
+                - Success: Validated, PII-redacted golden record ready for persistence
+                - Failure: Error information (error message, type, details)
         
         Raises:
             SourceNotFoundError: If source file/URL doesn't exist or cannot be accessed

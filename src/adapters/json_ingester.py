@@ -28,6 +28,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from src.domain.ports import (
     IngestionPort,
+    Result,
     SourceNotFoundError,
     ValidationError,
     TransformationError,
@@ -121,20 +122,22 @@ class JSONIngester(IngestionPort):
         
         return None
     
-    def ingest(self, source: str) -> Iterator[GoldenRecord]:
-        """Ingest JSON data and yield validated GoldenRecord objects.
+    def ingest(self, source: str) -> Iterator[Result[GoldenRecord]]:
+        """Ingest JSON data and yield Result objects containing GoldenRecord.
         
         This method implements triage logic to handle bad data gracefully:
         1. Each record is wrapped in try/except to prevent DoS
-        2. Bad records are logged as security rejections
+        2. Bad records are logged as security rejections and returned as Result.failure_result()
         3. Pipeline continues processing valid records
-        4. Only validated, PII-redacted records are yielded
+        4. Valid records are returned as Result.success_result()
         
         Parameters:
             source: Path to JSON file or JSON string
         
         Yields:
-            GoldenRecord: Validated, PII-redacted golden records
+            Result[GoldenRecord]: Result object containing either:
+                - Success: Validated, PII-redacted golden record
+                - Failure: Error information (error message, type, details)
         
         Raises:
             SourceNotFoundError: If source file doesn't exist
@@ -187,11 +190,29 @@ class JSONIngester(IngestionPort):
                 # Check record size to prevent memory exhaustion
                 record_str = json.dumps(raw_record)
                 if len(record_str.encode('utf-8')) > self.max_record_size:
-                    raise TransformationError(
+                    error = TransformationError(
                         f"Record {record_count} exceeds maximum size ({self.max_record_size} bytes)",
                         source=source,
                         raw_data={"size": len(record_str), "record_index": record_count}
                     )
+                    rejected_count += 1
+                    self._log_security_rejection(
+                        source=source,
+                        record_index=record_count,
+                        error=error,
+                        raw_record=raw_record
+                    )
+                    yield Result.failure_result(
+                        error,
+                        error_type="TransformationError",
+                        error_details={
+                            "source": source,
+                            "record_index": record_count,
+                            "size": len(record_str),
+                            "max_size": self.max_record_size
+                        }
+                    )
+                    continue
                 
                 # Transform and validate record
                 golden_record = self._triage_and_transform(
@@ -200,11 +221,11 @@ class JSONIngester(IngestionPort):
                     record_count
                 )
                 
-                # Yield validated record
-                yield golden_record
+                # Yield success result
+                yield Result.success_result(golden_record)
                 
             except (ValidationError, TransformationError) as e:
-                # Security rejection: Log and continue
+                # Security rejection: Log and return failure result
                 rejected_count += 1
                 self._log_security_rejection(
                     source=source,
@@ -212,11 +233,20 @@ class JSONIngester(IngestionPort):
                     error=e,
                     raw_record=raw_record
                 )
-                # Continue processing - don't crash the pipeline
+                yield Result.failure_result(
+                    e,
+                    error_type=type(e).__name__,
+                    error_details={
+                        "source": source,
+                        "record_index": record_count,
+                        **(e.details if hasattr(e, 'details') and e.details else {}),
+                        **(e.raw_data if hasattr(e, 'raw_data') and e.raw_data else {})
+                    }
+                )
                 continue
                 
             except Exception as e:
-                # Unexpected error: Log as security concern and continue
+                # Unexpected error: Log as security concern and return failure result
                 rejected_count += 1
                 logger.error(
                     f"Unexpected error processing record {record_count} from {source}: {str(e)}",
@@ -227,7 +257,14 @@ class JSONIngester(IngestionPort):
                         'error_type': type(e).__name__,
                     }
                 )
-                # Continue processing - fail-safe design
+                yield Result.failure_result(
+                    e,
+                    error_type=type(e).__name__,
+                    error_details={
+                        "source": source,
+                        "record_index": record_count
+                    }
+                )
                 continue
         
         # Log ingestion summary

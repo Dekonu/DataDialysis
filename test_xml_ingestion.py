@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 from src.adapters.xml_ingester import XMLIngester
+from src.domain.ports import Result
 
 
 def run_pipeline(file_path: str, config_path: str):
@@ -35,13 +36,18 @@ def run_pipeline(file_path: str, config_path: str):
     loader = XMLIngester(config_path=config_path)
     valid_count = 0
     
-    # The pipeline flows: File -> XML Adapter -> XPath Extraction -> Pydantic Model -> Sieve -> Out
-    for record in loader.ingest(file_path):
-        valid_count += 1
-        # Note: PII fields are redacted, so we can safely print patient_id
-        print(f"[OK] Ingested: Patient ID: {record.patient.patient_id} | "
-              f"Encounters: {len(record.encounters)} | "
-              f"Observations: {len(record.observations)}")
+    # The pipeline flows: File -> XML Adapter -> XPath Extraction -> Pydantic Model -> Sieve -> Result -> Out
+    for result in loader.ingest(file_path):
+        if result.is_success():
+            valid_count += 1
+            record = result.value
+            # Note: PII fields are redacted, so we can safely print patient_id
+            print(f"[OK] Ingested: Patient ID: {record.patient.patient_id} | "
+                  f"Encounters: {len(record.encounters)} | "
+                  f"Observations: {len(record.observations)}")
+        else:
+            # Failure results are logged by the adapter, but we can optionally print them
+            pass  # Failures are already logged as "SECURITY REJECTION"
     
     print(f"--- Pipeline Finished. Total Valid Records: {valid_count} ---")
 
