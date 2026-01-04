@@ -45,6 +45,7 @@ from src.domain.golden_record import (
     EncounterRecord,
 )
 from src.infrastructure.config_manager import DatabaseConfig
+from src.infrastructure.dataframe_cleaner import DataFrameCleaner
 
 logger = logging.getLogger(__name__)
 
@@ -1045,41 +1046,14 @@ class PostgreSQLAdapter(StoragePort):
             }
             table_array_cols = array_columns.get(table_name, [])
             
-            # Process columns: convert enums to strings, but keep arrays as lists
-            for col in df_filtered.columns:
-                if col in table_array_cols:
-                    # Keep arrays as lists for PostgreSQL array columns
-                    # Convert None/NaN/empty strings to empty list
-                    def normalize_array(x):
-                        if isinstance(x, list):
-                            return x
-                        elif pd.isna(x) or x is None or x == '[]' or x == '':
-                            return []
-                        elif isinstance(x, str) and x.startswith('[') and x.endswith(']'):
-                            # Try to parse string representation of list
-                            try:
-                                import ast
-                                parsed = ast.literal_eval(x)
-                                return parsed if isinstance(parsed, list) else [parsed]
-                            except:
-                                return []
-                        else:
-                            return [x] if x is not None else []
-                    
-                    df_filtered[col] = df_filtered[col].apply(normalize_array)
-                elif df_filtered[col].dtype == 'object':
-                    # Convert enum objects to strings, but preserve lists
-                    def normalize_value(x):
-                        if isinstance(x, list):
-                            return x  # Don't convert lists
-                        elif hasattr(x, 'value'):
-                            return x.value  # Convert enum to string
-                        elif x is None or pd.isna(x):
-                            return None
-                        else:
-                            return str(x)
-                    
-                    df_filtered[col] = df_filtered[col].apply(normalize_value)
+            # Use DataFrameCleaner service for all data cleaning operations
+            # This makes the code more maintainable and reusable across adapters
+            df_cleaned = DataFrameCleaner.prepare_for_database(
+                df_filtered,
+                array_columns=table_array_cols,
+                enum_columns=None,  # Auto-detect enum columns
+                convert_nat=True
+            )
             
             # Use psycopg2's execute_values for efficient bulk insertion
             # This avoids parameter limit issues and handles arrays correctly
@@ -1092,52 +1066,15 @@ class PostgreSQLAdapter(StoragePort):
             
             try:
                 # Prepare column names and data
-                columns = list(df_filtered.columns)
+                columns = list(df_cleaned.columns)
                 
-                # Convert NaT (Not a Time) values to None for datetime columns
-                # PostgreSQL can't handle NaT, so we need to convert them to None
-                df_cleaned = df_filtered.copy()
-                for col in df_cleaned.columns:
-                    if df_cleaned[col].dtype.name.startswith('datetime'):
-                        # Replace NaT with None using where() - this properly converts to None
-                        df_cleaned[col] = df_cleaned[col].where(pd.notna(df_cleaned[col]), None)
-                    elif df_cleaned[col].dtype == 'object':
-                        # Check if column contains datetime objects that might be NaT
-                        def convert_nat_to_none(x):
-                            if x is None:
-                                return None
-                            if isinstance(x, pd.Timestamp) and pd.isna(x):
-                                return None
-                            # Handle numpy datetime64 NaT
-                            if hasattr(x, 'dtype') and 'datetime' in str(x.dtype) and pd.isna(x):
-                                return None
-                            return x
-                        df_cleaned[col] = df_cleaned[col].apply(convert_nat_to_none)
-                
-                # Convert DataFrame to list of tuples, ensuring None values are properly handled
-                # Use itertuples for better control over value conversion
-                # CRITICAL: We must convert NaT to None before creating tuples
-                # Also need to handle array columns (lists) - don't check pd.isna() on arrays
-                values = []
-                for idx, row in df_cleaned.iterrows():
-                    row_values = []
-                    for col in df_cleaned.columns:
-                        val = row[col]
-                        # Skip NaT/NaN checks for list/array values (they're already handled above)
-                        if isinstance(val, (list, tuple)):
-                            row_values.append(val)
-                        # Comprehensive check for NaT/NaN values (only for non-array types)
-                        elif val is None:
-                            row_values.append(None)
-                        elif isinstance(val, pd.Timestamp) and pd.isna(val):
-                            row_values.append(None)
-                        elif hasattr(val, 'dtype') and 'datetime' in str(val.dtype) and pd.isna(val):
-                            row_values.append(None)
-                        elif not isinstance(val, (list, tuple)) and pd.isna(val):
-                            row_values.append(None)
-                        else:
-                            row_values.append(val)
-                    values.append(tuple(row_values))
+                # Convert DataFrame to list of tuples for database insertion
+                # The cleaner handles NaT conversion, array normalization, and enum conversion
+                values = DataFrameCleaner.convert_to_tuples(
+                    df_cleaned,
+                    handle_nat=True,
+                    array_columns=set(table_array_cols)
+                )
                 
                 # Build INSERT statement with ON CONFLICT handling for primary keys
                 # This allows re-running ingestion without duplicate key errors

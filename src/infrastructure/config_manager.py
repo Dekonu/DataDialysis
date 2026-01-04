@@ -394,7 +394,12 @@ class ConfigManager:
             - Credentials are stored as SecretStr (never logged)
         """
         if self._database_config is None:
-            db_config_data = self._config_data.get("database", {})
+            # Check if config_data has nested "database" key (from file) or flat structure (from environment)
+            if "database" in self._config_data and isinstance(self._config_data["database"], dict):
+                db_config_data = self._config_data["database"]
+            else:
+                # Flat structure from environment variables - use config_data directly
+                db_config_data = self._config_data.copy()
             
             # Convert password and connection_string to SecretStr if present
             if "password" in db_config_data and db_config_data["password"]:

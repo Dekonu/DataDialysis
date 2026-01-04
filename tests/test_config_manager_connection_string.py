@@ -210,22 +210,40 @@ class TestEnvironmentVariables:
     
     def test_environment_individual_fields_construct_connection_string(self):
         """Test that individual environment variables construct connection_string."""
-        with patch.dict(os.environ, {
-            'DD_DB_TYPE': 'postgresql',
-            'DD_DB_HOST': 'localhost',
-            'DD_DB_PORT': '5432',
-            'DD_DB_NAME': 'mydb',
-            'DD_DB_USER': 'user',
-            'DD_DB_PASSWORD': 'pass',
-            'DD_DB_SSL_MODE': 'require'
-        }):
-            config = get_database_config()
-            
-            assert config.connection_string is not None
-            conn_str = config.connection_string.get_secret_value()
-            assert "postgresql://" in conn_str
-            assert "localhost" in conn_str
-            assert "mydb" in conn_str
+        # Clear any existing database-related env vars to avoid conflicts
+        env_vars_to_clear = [
+            'DD_DB_CONNECTION_STRING',  # Clear connection string to force field-based construction
+            'DD_DB_DATABASE',  # Clear any alternative database name
+        ]
+        cleared_values = {}
+        for var in env_vars_to_clear:
+            if var in os.environ:
+                cleared_values[var] = os.environ.pop(var)
+        
+        try:
+            with patch.dict(os.environ, {
+                'DD_DB_TYPE': 'postgresql',
+                'DD_DB_HOST': 'localhost',
+                'DD_DB_PORT': '5432',
+                'DD_DB_NAME': 'mydb',
+                'DD_DB_USER': 'user',
+                'DD_DB_PASSWORD': 'pass',
+                'DD_DB_SSL_MODE': 'require'
+            }, clear=False):
+                # Force reload by creating a new ConfigManager
+                config_manager = ConfigManager.from_environment()
+                config = config_manager.get_database_config()
+                
+                assert config.database == 'mydb', f"Expected database='mydb', got {config.database}"
+                assert config.connection_string is not None
+                conn_str = config.connection_string.get_secret_value()
+                assert "postgresql://" in conn_str
+                assert "localhost" in conn_str
+                assert "mydb" in conn_str, f"Expected 'mydb' in connection string, got: {conn_str}"
+        finally:
+            # Restore cleared values
+            for var, value in cleared_values.items():
+                os.environ[var] = value
     
     def test_environment_connection_string_takes_precedence(self):
         """Test that connection_string takes precedence over individual fields."""
