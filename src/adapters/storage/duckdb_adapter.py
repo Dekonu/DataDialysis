@@ -274,6 +274,22 @@ class DuckDBAdapter(StoragePort):
                 )
             """)
             
+            # Create redaction logs table for detailed PII redaction tracking
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS logs (
+                    log_id VARCHAR PRIMARY KEY,
+                    field_name VARCHAR NOT NULL,
+                    original_hash VARCHAR NOT NULL,
+                    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    rule_triggered VARCHAR NOT NULL,
+                    record_id VARCHAR,
+                    source_adapter VARCHAR,
+                    ingestion_id VARCHAR,
+                    redacted_value VARCHAR,
+                    original_value_length INTEGER
+                )
+            """)
+            
             # Create indexes for performance
             conn.execute("CREATE INDEX IF NOT EXISTS idx_patients_source ON patients(source_adapter)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_patients_timestamp ON patients(ingestion_timestamp)")
@@ -283,6 +299,13 @@ class DuckDBAdapter(StoragePort):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_log(event_type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(event_timestamp)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_record_id ON audit_log(record_id)")
+            
+            # Create indexes for redaction logs
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_field_name ON logs(field_name)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_rule_triggered ON logs(rule_triggered)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_record_id ON logs(record_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_ingestion_id ON logs(ingestion_id)")
             
             self._initialized = True
             logger.info("Database schema initialized successfully")
@@ -687,6 +710,213 @@ class DuckDBAdapter(StoragePort):
             logger.error(error_msg, exc_info=True)
             return Result.failure_result(
                 StorageError(error_msg, operation="log_audit_event"),
+                error_type="StorageError"
+            )
+    
+    def log_redaction_event(
+        self,
+        field_name: str,
+        original_hash: str,
+        rule_triggered: str,
+        record_id: Optional[str] = None,
+        source_adapter: Optional[str] = None,
+        ingestion_id: Optional[str] = None,
+        redacted_value: Optional[str] = None,
+        original_value_length: Optional[int] = None
+    ) -> Result[str]:
+        """Log a single redaction event to the logs table.
+        
+        Parameters:
+            field_name: Name of the field that was redacted
+            original_hash: SHA256 hash of the original value
+            rule_triggered: Name of the redaction rule that was triggered
+            record_id: Unique identifier of the record
+            source_adapter: Source adapter identifier
+            ingestion_id: Ingestion run identifier
+            redacted_value: Redacted value (optional, for debugging)
+            original_value_length: Length of original value (optional)
+        
+        Returns:
+            Result[str]: Log entry ID or error
+        """
+        try:
+            if not self._initialized:
+                init_result = self.initialize_schema()
+                if not init_result.is_success():
+                    return init_result
+            
+            conn = self._get_connection()
+            log_id = str(uuid.uuid4())
+            
+            conn.execute("""
+                INSERT INTO logs (
+                    log_id, field_name, original_hash, timestamp, rule_triggered,
+                    record_id, source_adapter, ingestion_id, redacted_value, original_value_length
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                log_id,
+                field_name,
+                original_hash,
+                datetime.now(),
+                rule_triggered,
+                record_id,
+                source_adapter,
+                ingestion_id,
+                redacted_value,
+                original_value_length,
+            ])
+            
+            logger.debug(f"Logged redaction event: {field_name} - {rule_triggered} (ID: {log_id})")
+            return Result.success_result(log_id)
+            
+        except Exception as e:
+            error_msg = f"Failed to log redaction event: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return Result.failure_result(
+                StorageError(error_msg, operation="log_redaction_event"),
+                error_type="StorageError"
+            )
+    
+    def flush_redaction_logs(self, redaction_logs: list[dict]) -> Result[int]:
+        """Flush multiple redaction logs to the database in a single transaction.
+        
+        Parameters:
+            redaction_logs: List of redaction log dictionaries
+        
+        Returns:
+            Result[int]: Number of logs persisted or error
+        """
+        if not redaction_logs:
+            return Result.success_result(0)
+        
+        try:
+            if not self._initialized:
+                init_result = self.initialize_schema()
+                if not init_result.is_success():
+                    return init_result
+            
+            conn = self._get_connection()
+            
+            # Bulk insert redaction logs
+            for log_entry in redaction_logs:
+                conn.execute("""
+                    INSERT INTO logs (
+                        log_id, field_name, original_hash, timestamp, rule_triggered,
+                        record_id, source_adapter, ingestion_id, redacted_value, original_value_length
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [
+                    log_entry.get('log_id', str(uuid.uuid4())),
+                    log_entry.get('field_name'),
+                    log_entry.get('original_hash'),
+                    log_entry.get('timestamp', datetime.now()),
+                    log_entry.get('rule_triggered'),
+                    log_entry.get('record_id'),
+                    log_entry.get('source_adapter'),
+                    log_entry.get('ingestion_id'),
+                    log_entry.get('redacted_value'),
+                    log_entry.get('original_value_length'),
+                ])
+            
+            count = len(redaction_logs)
+            logger.info(f"Flushed {count} redaction logs to database")
+            return Result.success_result(count)
+            
+        except Exception as e:
+            error_msg = f"Failed to flush redaction logs: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return Result.failure_result(
+                StorageError(error_msg, operation="flush_redaction_logs"),
+                error_type="StorageError"
+            )
+    
+    def generate_security_report(
+        self,
+        ingestion_id: Optional[str] = None,
+        start_timestamp: Optional[datetime] = None,
+        end_timestamp: Optional[datetime] = None
+    ) -> Result[dict]:
+        """Generate a security report of all redaction events.
+        
+        Parameters:
+            ingestion_id: Optional ingestion ID to filter by
+            start_timestamp: Optional start time for report period
+            end_timestamp: Optional end time for report period
+        
+        Returns:
+            Result[dict]: Security report dictionary or error
+        """
+        try:
+            if not self._initialized:
+                init_result = self.initialize_schema()
+                if not init_result.is_success():
+                    return init_result
+            
+            conn = self._get_connection()
+            
+            # Build query with optional filters
+            query = "SELECT * FROM logs WHERE 1=1"
+            params = []
+            
+            if ingestion_id:
+                query += " AND ingestion_id = ?"
+                params.append(ingestion_id)
+            
+            if start_timestamp:
+                query += " AND timestamp >= ?"
+                params.append(start_timestamp)
+            
+            if end_timestamp:
+                query += " AND timestamp <= ?"
+                params.append(end_timestamp)
+            
+            query += " ORDER BY timestamp DESC"
+            
+            # Execute query
+            result = conn.execute(query, params).fetchall()
+            
+            # Get column names
+            columns = [desc[0] for desc in conn.execute("PRAGMA table_info(logs)").fetchall()]
+            
+            # Convert to list of dictionaries
+            logs = [dict(zip(columns, row)) for row in result]
+            
+            # Generate summary statistics
+            total_redactions = len(logs)
+            redactions_by_field = {}
+            redactions_by_rule = {}
+            redactions_by_adapter = {}
+            
+            for log in logs:
+                field = log.get('field_name', 'unknown')
+                rule = log.get('rule_triggered', 'unknown')
+                adapter = log.get('source_adapter', 'unknown')
+                
+                redactions_by_field[field] = redactions_by_field.get(field, 0) + 1
+                redactions_by_rule[rule] = redactions_by_rule.get(rule, 0) + 1
+                redactions_by_adapter[adapter] = redactions_by_adapter.get(adapter, 0) + 1
+            
+            report = {
+                "report_timestamp": datetime.now().isoformat(),
+                "ingestion_id": ingestion_id,
+                "start_timestamp": start_timestamp.isoformat() if start_timestamp else None,
+                "end_timestamp": end_timestamp.isoformat() if end_timestamp else None,
+                "summary": {
+                    "total_redactions": total_redactions,
+                    "redactions_by_field": redactions_by_field,
+                    "redactions_by_rule": redactions_by_rule,
+                    "redactions_by_adapter": redactions_by_adapter,
+                },
+                "events": logs
+            }
+            
+            logger.info(f"Generated security report: {total_redactions} redaction events")
+            return Result.success_result(report)
+            
+        except Exception as e:
+            error_msg = f"Failed to generate security report: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return Result.failure_result(
+                StorageError(error_msg, operation="generate_security_report"),
                 error_type="StorageError"
             )
     

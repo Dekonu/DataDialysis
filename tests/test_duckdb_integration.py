@@ -334,7 +334,7 @@ class TestJSONToDuckDBFlow:
         # to be extracted separately or the JSON ingester enhanced to yield multiple DataFrames
         # For now, we only verify patients were persisted
         
-        # TODO: Enhance JSON ingester to extract encounters and observations into separate DataFrames
+        # `TODO`: Enhance JSON ingester to extract encounters and observations into separate DataFrames
         # Check encounters (currently will be 0 because JSON ingester doesn't extract them)
         encounter_count = conn.execute("SELECT COUNT(*) FROM encounters").fetchone()[0]
         # assert encounter_count > 0, "No encounters found"  # Commented out until JSON ingester is enhanced

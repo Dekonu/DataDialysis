@@ -18,11 +18,14 @@ Architecture:
 import sys
 import argparse
 import logging
+import uuid
 from pathlib import Path
 from typing import Optional
 
 from src.infrastructure.settings import settings
 from src.infrastructure.config_manager import get_database_config
+from src.infrastructure.redaction_logger import get_redaction_logger, reset_redaction_logger
+from src.infrastructure.security_report import generate_security_report, print_security_report_summary
 from src.adapters.ingesters import get_adapter
 from src.adapters.storage import DuckDBAdapter, PostgreSQLAdapter
 from src.domain.ports import Result, StoragePort
@@ -72,7 +75,7 @@ def process_ingestion(
         batch_size: Optional batch size for processing (overrides settings)
     
     Returns:
-        tuple[int, int]: (success_count, failure_count)
+        tuple[int, int, str]: (success_count, failure_count, ingestion_id)
     
     Security Impact:
         - All records are validated and PII-redacted before persistence
@@ -99,6 +102,12 @@ def process_ingestion(
         logger.error(f"Failed to initialize schema: {schema_result.error}")
         raise RuntimeError(f"Schema initialization failed: {schema_result.error}")
     logger.info("Schema initialized successfully")
+    
+    # Initialize redaction logger for this ingestion run
+    redaction_logger = get_redaction_logger()
+    ingestion_id = str(uuid.uuid4())
+    redaction_logger.set_ingestion_id(ingestion_id)
+    logger.info(f"Ingestion ID: {ingestion_id}")
     
     # Initialize circuit breaker if enabled
     circuit_breaker = None
@@ -198,7 +207,17 @@ def process_ingestion(
             if persist_result.is_success():
                 success_count += len(batch_records)
     
-    return success_count, failure_count
+    # Flush redaction logs to storage
+    logger.info("Flushing redaction logs to storage...")
+    redaction_logs = redaction_logger.get_logs()
+    if redaction_logs and hasattr(storage, 'flush_redaction_logs'):
+        flush_result = storage.flush_redaction_logs(redaction_logs)
+        if flush_result.is_success():
+            logger.info(f"Flushed {flush_result.value} redaction logs to storage")
+        else:
+            logger.warning(f"Failed to flush redaction logs: {flush_result.error}")
+    
+    return success_count, failure_count, ingestion_id
 
 
 def main():
@@ -282,7 +301,7 @@ Examples:
     
     # Process ingestion
     try:
-        success_count, failure_count = process_ingestion(
+        success_count, failure_count, ingestion_id = process_ingestion(
             source=args.input,
             storage=storage,
             xml_config_path=args.xml_config,
@@ -299,7 +318,36 @@ Examples:
         if total_count > 0:
             success_rate = (success_count / total_count) * 100
             logger.info(f"  Success rate: {success_rate:.2f}%")
+        logger.info(f"  Ingestion ID: {ingestion_id}")
         logger.info("=" * 60)
+        
+        # Generate security report
+        logger.info("Generating security report...")
+        if hasattr(storage, 'generate_security_report'):
+            report_result = generate_security_report(
+                storage=storage,
+                ingestion_id=ingestion_id
+            )
+            
+            if report_result.is_success():
+                report = report_result.value
+                print_security_report_summary(report)
+                
+                # Save report to file if enabled
+                if settings.save_security_report:
+                    report_file = Path(settings.security_report_dir) / f"security_report_{ingestion_id}.json"
+                    report_file.parent.mkdir(exist_ok=True)
+                    save_result = generate_security_report(
+                        storage=storage,
+                        output_path=str(report_file),
+                        ingestion_id=ingestion_id
+                    )
+                    if save_result.is_success():
+                        logger.info(f"Security report saved to: {report_file}")
+                else:
+                    logger.info("Security report file saving is disabled (DD_SAVE_SECURITY_REPORT=false)")
+            else:
+                logger.warning(f"Failed to generate security report: {report_result.error}")
         
         # Exit with appropriate code
         if failure_count > 0:
