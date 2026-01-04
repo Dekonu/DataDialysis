@@ -1,0 +1,4 @@
+---
+alwaysApply: true
+---
+You are developing on a windows machine - remember to use powershell commands and enter the virtual environment before calling any terminal commands.

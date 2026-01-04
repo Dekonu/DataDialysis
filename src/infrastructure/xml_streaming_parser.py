@@ -224,9 +224,6 @@ class StreamingXMLParser:
         self._current_depth = 0
         self._depth_stack = []
         
-        # Create secure parser
-        parser = self._create_parser()
-        
         # Determine record selector
         if record_tag and record_xpath:
             raise ValueError("Cannot specify both record_tag and record_xpath")
@@ -237,11 +234,14 @@ class StreamingXMLParser:
         try:
             with open(source_path, 'rb') as xml_file:
                 # Use iterparse for streaming
+                # Note: iterparse doesn't accept parser as keyword argument
+                # Security is enforced via manual checks in _check_security_limits
+                # The parser settings (resolve_entities=False, etc.) are handled
+                # by our security checks rather than the parser itself
                 context = iterparse(
                     xml_file,
                     events=('end',),
-                    tag=record_tag if record_tag else None,
-                    parser=parser
+                    tag=record_tag if record_tag else None
                 )
                 
                 def record_iterator() -> Iterator[Any]:

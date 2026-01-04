@@ -134,15 +134,15 @@ class XMLIngester(IngestionPort):
         
         # Streaming configuration
         from src.infrastructure.settings import settings
+        # Preserve None for auto-detection - don't override with settings
+        # None means auto-detect based on file size
         self.streaming_enabled = streaming_enabled
-        if self.streaming_enabled is None:
-            # Auto-detect: use streaming if enabled in settings
-            self.streaming_enabled = settings.xml_streaming_enabled
         self.streaming_threshold = streaming_threshold or settings.xml_streaming_threshold
         
-        # Initialize streaming parser if needed
+        # Initialize streaming parser if streaming might be used
+        # (either explicitly enabled or auto-detect mode)
         self._streaming_parser = None
-        if self.streaming_enabled:
+        if self.streaming_enabled is not False:  # True or None (auto-detect)
             try:
                 from src.infrastructure.xml_streaming_parser import StreamingXMLParser
                 self._streaming_parser = StreamingXMLParser(
@@ -154,6 +154,7 @@ class XMLIngester(IngestionPort):
                     "lxml not available, falling back to non-streaming mode. "
                     "Install lxml for streaming support: pip install lxml"
                 )
+                # If lxml not available, disable streaming regardless of setting
                 self.streaming_enabled = False
     
     def _validate_config(self) -> None:
@@ -255,14 +256,27 @@ class XMLIngester(IngestionPort):
         
         Returns:
             bool: True if streaming should be used
+        
+        Logic:
+            - If streaming_enabled is explicitly True: Always use streaming (ignore file size)
+            - If streaming_enabled is explicitly False: Never use streaming
+            - If streaming_enabled is None (auto-detect): Check file size against threshold
         """
-        if not self.streaming_enabled:
+        # Explicitly disabled
+        if self.streaming_enabled is False:
             return False
         
+        # Streaming parser not available
         if not self._streaming_parser:
+            
             return False
         
-        # Check file size
+        # Explicitly enabled - use streaming regardless of file size
+        if self.streaming_enabled is True:
+            return True
+        
+        # Auto-detect mode (streaming_enabled is None) - check file size
+        # This means settings.xml_streaming_enabled was used
         try:
             source_path = Path(source)
             if source_path.exists():
@@ -343,7 +357,12 @@ class XMLIngester(IngestionPort):
                                 raw_data={"size": len(record_str), "record_index": record_count}
                             )
                             rejected_count += 1
-                            self._log_security_rejection(error, source, record_count)
+                            self._log_security_rejection(
+                                source=source,
+                                record_index=record_count,
+                                error=error,
+                                raw_record={"record_index": record_count, "size": len(record_str)}
+                            )
                             yield Result.failure_result(
                                 error,
                                 error_type="TransformationError",
@@ -363,7 +382,12 @@ class XMLIngester(IngestionPort):
                             source=source,
                             raw_data={"record_index": record_count, "error": str(e)}
                         )
-                        self._log_security_rejection(error, source, record_count)
+                        self._log_security_rejection(
+                            source=source,
+                            record_index=record_count,
+                            error=error,
+                            raw_record={"record_index": record_count, "error": str(e)}
+                        )
                         yield Result.failure_result(
                             error,
                             error_type="TransformationError",

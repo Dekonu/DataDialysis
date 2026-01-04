@@ -217,10 +217,9 @@ class TestXMLStreamingExplicitMode:
             streaming_enabled=True  # Explicitly enable
         )
         
-        # Should use streaming regardless of file size
-        with patch.object(Path, 'stat') as mock_stat:
-            mock_stat.return_value.st_size = 10 * 1024 * 1024  # Small file
-            assert ingester._should_use_streaming(str(small_xml_file)) == True
+        # Should use streaming regardless of file size when explicitly enabled
+        # The file is small (< threshold), but streaming is explicitly enabled
+        assert ingester._should_use_streaming(str(small_xml_file)) == True
         
         # Verify streaming parser is initialized
         assert ingester._streaming_parser is not None
