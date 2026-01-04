@@ -89,7 +89,9 @@ class XMLIngester(IngestionPort):
         self,
         config_path: Optional[str] = None,
         config_dict: Optional[Dict[str, Any]] = None,
-        max_record_size: int = 10 * 1024 * 1024
+        max_record_size: int = 10 * 1024 * 1024,
+        streaming_enabled: Optional[bool] = None,
+        streaming_threshold: Optional[int] = None
     ):
         """Initialize XML ingester.
         
@@ -98,6 +100,8 @@ class XMLIngester(IngestionPort):
             config_dict: Configuration dictionary (alternative to config_path)
             max_record_size: Maximum size of a single record in bytes (default: 10MB)
                             Prevents memory exhaustion from oversized records
+            streaming_enabled: Enable streaming mode (None = auto-detect based on file size)
+            streaming_threshold: File size threshold for auto-enabling streaming (bytes)
         
         Raises:
             ValueError: If neither config_path nor config_dict is provided
@@ -127,6 +131,30 @@ class XMLIngester(IngestionPort):
         self.adapter_name = "xml_ingester"
         self.root_xpath = self.config.get('root_element', '.')
         self.field_mappings = self.config.get('fields', {})
+        
+        # Streaming configuration
+        from src.infrastructure.settings import settings
+        self.streaming_enabled = streaming_enabled
+        if self.streaming_enabled is None:
+            # Auto-detect: use streaming if enabled in settings
+            self.streaming_enabled = settings.xml_streaming_enabled
+        self.streaming_threshold = streaming_threshold or settings.xml_streaming_threshold
+        
+        # Initialize streaming parser if needed
+        self._streaming_parser = None
+        if self.streaming_enabled:
+            try:
+                from src.infrastructure.xml_streaming_parser import StreamingXMLParser
+                self._streaming_parser = StreamingXMLParser(
+                    max_events=settings.xml_max_events,
+                    max_depth=settings.xml_max_depth
+                )
+            except ImportError:
+                logger.warning(
+                    "lxml not available, falling back to non-streaming mode. "
+                    "Install lxml for streaming support: pip install lxml"
+                )
+                self.streaming_enabled = False
     
     def _validate_config(self) -> None:
         """Validate configuration structure.
@@ -196,14 +224,62 @@ class XMLIngester(IngestionPort):
         
         return None
     
+    def _get_record_tag_from_config(self) -> Optional[str]:
+        """Extract record tag name from root_element XPath.
+        
+        Returns:
+            Optional[str]: Tag name if root_element is a simple tag path, None otherwise
+        """
+        if not self.root_xpath or self.root_xpath == '.':
+            return None
+        
+        # Try to extract tag name from XPath
+        # Simple case: "./PatientRecord" or "PatientRecord"
+        xpath = self.root_xpath.strip()
+        if xpath.startswith('./'):
+            xpath = xpath[2:]
+        if xpath.startswith('//'):
+            xpath = xpath[2:]
+        
+        # If it's a simple tag name (no slashes, no predicates), use it
+        if '/' not in xpath and '[' not in xpath:
+            return xpath
+        
+        return None
+    
+    def _should_use_streaming(self, source: str) -> bool:
+        """Determine if streaming should be used for this source.
+        
+        Parameters:
+            source: Source file path
+        
+        Returns:
+            bool: True if streaming should be used
+        """
+        if not self.streaming_enabled:
+            return False
+        
+        if not self._streaming_parser:
+            return False
+        
+        # Check file size
+        try:
+            source_path = Path(source)
+            if source_path.exists():
+                file_size = source_path.stat().st_size
+                return file_size >= self.streaming_threshold
+        except (OSError, ValueError):
+            pass
+        
+        return False
+    
     def ingest(self, source: str) -> Iterator[Result[GoldenRecord]]:
         """Ingest XML data and yield Result objects containing GoldenRecord.
         
-        This method implements triage logic to handle bad data gracefully:
-        1. Each record is wrapped in try/except to prevent DoS
-        2. Bad records are logged as security rejections and returned as Result.failure_result()
-        3. Pipeline continues processing valid records
-        4. Valid records are returned as Result.success_result()
+        This method automatically selects streaming or non-streaming mode based on:
+        - File size (streaming for large files)
+        - Configuration settings
+        - Availability of lxml library
         
         Parameters:
             source: Path to XML file
@@ -216,6 +292,110 @@ class XMLIngester(IngestionPort):
         Raises:
             SourceNotFoundError: If source file doesn't exist
             UnsupportedSourceError: If source is not valid XML
+        """
+        # Check if streaming should be used
+        if self._should_use_streaming(source):
+            logger.info(f"Using streaming mode for large XML file: {source}")
+            yield from self._ingest_streaming(source)
+        else:
+            yield from self._ingest_traditional(source)
+    
+    def _ingest_streaming(self, source: str) -> Iterator[Result[GoldenRecord]]:
+        """Ingest XML using streaming parser (memory efficient for large files).
+        
+        Parameters:
+            source: Path to XML file
+        
+        Yields:
+            Result[GoldenRecord]: Processed records
+        """
+        source_path = Path(source)
+        if not source_path.exists():
+            raise SourceNotFoundError(
+                f"XML source not found: {source}",
+                source=source
+            )
+        
+        # Get record tag or XPath from config
+        record_tag = self._get_record_tag_from_config()
+        record_xpath = self.root_xpath if record_tag is None else None
+        
+        # Process records using streaming parser
+        record_count = 0
+        rejected_count = 0
+        
+        try:
+            with self._streaming_parser.parse(source, record_tag=record_tag, record_xpath=record_xpath) as records:
+                for xml_record in records:
+                    record_count += 1
+                    
+                    # Triage: Wrap each record in try/except to prevent DoS
+                    try:
+                        # Extract data using XPath mappings (use streaming parser's XPath method)
+                        record_data = self._extract_record_data_streaming(xml_record, record_count)
+                        
+                        # Check record size
+                        record_str = json.dumps(record_data)
+                        if len(record_str.encode('utf-8')) > self.max_record_size:
+                            error = TransformationError(
+                                f"Record {record_count} exceeds maximum size ({self.max_record_size} bytes)",
+                                source=source,
+                                raw_data={"size": len(record_str), "record_index": record_count}
+                            )
+                            rejected_count += 1
+                            self._log_security_rejection(error, source, record_count)
+                            yield Result.failure_result(
+                                error,
+                                error_type="TransformationError",
+                                error_details={"record_index": record_count, "reason": "record_too_large"}
+                            )
+                            continue
+                        
+                        # Transform and validate
+                        golden_record = self._triage_and_transform(record_data, source, record_count)
+                        yield Result.success_result(golden_record)
+                        
+                    except Exception as e:
+                        # Triage: Log and continue (fail-safe)
+                        rejected_count += 1
+                        error = TransformationError(
+                            f"Error processing record {record_count}: {str(e)}",
+                            source=source,
+                            raw_data={"record_index": record_count, "error": str(e)}
+                        )
+                        self._log_security_rejection(error, source, record_count)
+                        yield Result.failure_result(
+                            error,
+                            error_type="TransformationError",
+                            error_details={"record_index": record_count, "error": str(e)}
+                        )
+                        continue
+                    finally:
+                        # Memory is already cleared by streaming parser
+                        pass
+                        
+        except Exception as e:
+            # Streaming parser errors
+            raise TransformationError(
+                f"Streaming XML parsing failed: {str(e)}",
+                source=source
+            )
+        
+        # Log ingestion summary
+        if record_count > 0:
+            logger.info(
+                f"XML streaming ingestion complete: {source} - "
+                f"{record_count - rejected_count} accepted, {rejected_count} rejected"
+            )
+    
+    def _ingest_traditional(self, source: str) -> Iterator[Result[GoldenRecord]]:
+        """Ingest XML using traditional parsing (loads entire file into memory).
+        
+        Parameters:
+            source: Path to XML file
+        
+        Yields:
+            Result[GoldenRecord]: Processed records
         """
         # Validate source exists
         source_path = Path(source)
@@ -230,7 +410,7 @@ class XMLIngester(IngestionPort):
         if file_size > self.max_record_size * 100:
             logger.warning(
                 f"Large XML file detected: {source} ({file_size} bytes). "
-                "Processing may be slow."
+                "Consider enabling streaming mode for better performance."
             )
         
         try:
@@ -360,6 +540,38 @@ class XMLIngester(IngestionPort):
                 f"XML ingestion complete: {source} - "
                 f"{record_count - rejected_count} accepted, {rejected_count} rejected"
             )
+    
+    def _extract_record_data_streaming(self, xml_element: Any, record_index: int) -> dict:
+        """Extract data from XML element using streaming parser's XPath method.
+        
+        Parameters:
+            xml_element: XML element to extract data from
+            record_index: Index of record (for error messages)
+        
+        Returns:
+            dict: Extracted data dictionary
+        """
+        record_data = {}
+        
+        for field_name, xpath_expr in self.field_mappings.items():
+            try:
+                # Use streaming parser's XPath extraction
+                value = self._streaming_parser.extract_with_xpath(xml_element, xpath_expr)
+                if value:
+                    record_data[field_name] = value
+            except Exception as e:
+                logger.warning(
+                    f"XPath extraction failed for field '{field_name}' "
+                    f"in record {record_index}: {str(e)}",
+                    extra={
+                        'field_name': field_name,
+                        'xpath': xpath_expr,
+                        'record_index': record_index,
+                    }
+                )
+                continue
+        
+        return record_data
     
     def _extract_record_data(self, xml_element: Any, record_index: int) -> dict:
         """Extract data from XML element using XPath mappings.

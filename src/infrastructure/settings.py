@@ -65,6 +65,12 @@ class Settings:
         # Security report settings
         self.save_security_report = os.getenv("DD_SAVE_SECURITY_REPORT", "true").lower() == "true"
         self.security_report_dir = os.getenv("DD_SECURITY_REPORT_DIR", "reports")
+        
+        # XML streaming settings
+        self.xml_streaming_enabled = os.getenv("DD_XML_STREAMING_ENABLED", "true").lower() == "true"
+        self.xml_streaming_threshold = int(os.getenv("DD_XML_STREAMING_THRESHOLD", str(100 * 1024 * 1024)))  # 100MB
+        self.xml_max_events = int(os.getenv("DD_XML_MAX_EVENTS", "1000000"))
+        self.xml_max_depth = int(os.getenv("DD_XML_MAX_DEPTH", "100"))
     
     @property
     def db_config(self) -> DatabaseConfig:
