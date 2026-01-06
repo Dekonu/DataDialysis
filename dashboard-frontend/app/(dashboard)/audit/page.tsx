@@ -130,8 +130,39 @@ async function AuditLogsContent({ searchParams }: AuditLogsContentProps) {
                           </Badge>
                         )}
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {log.source_adapter || 'N/A'}
+                      <TableCell>
+                        {(() => {
+                          // Try to get source_adapter from the log entry
+                          const source = log.source_adapter;
+                          
+                          // If not available, try to extract from details
+                          if (!source && log.details) {
+                            const detailsSource = 
+                              (log.details as Record<string, unknown>)?.source_adapter ||
+                              (log.details as Record<string, unknown>)?.source ||
+                              (log.details as Record<string, unknown>)?.adapter;
+                            
+                            if (detailsSource && typeof detailsSource === 'string') {
+                              return (
+                                <Badge variant="outline" className="font-normal">
+                                  {detailsSource}
+                                </Badge>
+                              );
+                            }
+                          }
+                          
+                          // Display source_adapter if available
+                          if (source && source.trim()) {
+                            return (
+                              <Badge variant="outline" className="font-normal">
+                                {source}
+                              </Badge>
+                            );
+                          }
+                          
+                          // Fallback to N/A
+                          return <span className="text-sm text-muted-foreground">N/A</span>;
+                        })()}
                       </TableCell>
                       <TableCell className="font-mono text-xs">
                         {log.record_id || 'N/A'}

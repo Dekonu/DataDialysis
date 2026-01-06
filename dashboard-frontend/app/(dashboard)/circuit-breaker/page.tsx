@@ -1,6 +1,6 @@
 import { Suspense } from 'react';
 import { api } from '@/lib/api';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { RealtimeCircuitBreaker } from '@/components/dashboard/realtime-circuit-breaker';
 
 async function CircuitBreakerContent() {

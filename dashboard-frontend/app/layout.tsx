@@ -3,6 +3,7 @@ import { Inter } from 'next/font/google';
 import './globals.css';
 import { Navigation } from '@/components/dashboard/navigation';
 import { ThemeProvider } from '@/components/theme-provider';
+import { ErrorBoundary } from '@/components/error-boundary';
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -30,7 +31,7 @@ export default function RootLayout({
               </div>
             </nav>
             <main className="container mx-auto px-4 py-4 sm:py-8 animate-fade-in">
-              {children}
+              <ErrorBoundary>{children}</ErrorBoundary>
             </main>
           </div>
         </ThemeProvider>
