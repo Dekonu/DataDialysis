@@ -186,8 +186,10 @@ class TestMetricsEndpoints:
         
         assert response.status_code == 200
         data = response.json()
-        assert "message" in data
-        assert data["endpoint"] == "/api/metrics/overview"
+        assert "time_range" in data
+        assert "ingestions" in data
+        assert "records" in data
+        assert "redactions" in data
     
     def test_overview_metrics_endpoint_accepts_time_range(self, client):
         """Test that overview metrics endpoint accepts time_range parameter."""
@@ -203,8 +205,9 @@ class TestMetricsEndpoints:
         
         assert response.status_code == 200
         data = response.json()
-        assert "message" in data
-        assert data["endpoint"] == "/api/metrics/security"
+        assert "time_range" in data
+        assert "redactions" in data
+        assert "audit_events" in data
     
     def test_security_metrics_endpoint_accepts_time_range(self, client):
         """Test that security metrics endpoint accepts time_range parameter."""
@@ -220,8 +223,11 @@ class TestMetricsEndpoints:
         
         assert response.status_code == 200
         data = response.json()
-        assert "message" in data
-        assert data["endpoint"] == "/api/metrics/performance"
+        assert "time_range" in data
+        assert "throughput" in data
+        assert "latency" in data
+        assert "file_processing" in data
+        assert "memory" in data
     
     def test_performance_metrics_endpoint_accepts_time_range(self, client):
         """Test that performance metrics endpoint accepts time_range parameter."""
