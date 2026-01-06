@@ -90,12 +90,16 @@ class AuditService:
                 params.append(source_adapter)
             
             # Validate sort_by to prevent SQL injection
-            allowed_sort_fields = [
-                "event_timestamp", "event_type", "severity", 
-                "source_adapter", "record_id"
-            ]
-            if sort_by not in allowed_sort_fields:
-                sort_by = "event_timestamp"
+            # Use a mapping to ensure we only use predefined, safe column names
+            allowed_sort_fields = {
+                "event_timestamp": "event_timestamp",
+                "event_type": "event_type",
+                "severity": "severity",
+                "source_adapter": "source_adapter",
+                "record_id": "record_id"
+            }
+            # Get the safe column name from mapping, default to event_timestamp
+            safe_sort_by = allowed_sort_fields.get(sort_by, "event_timestamp")
             
             # Validate sort_order
             sort_order = sort_order.upper()
@@ -117,7 +121,8 @@ class AuditService:
             total = count_result[0] if count_result else 0
             
             # Add sorting and pagination
-            query += f" ORDER BY {sort_by} {sort_order}"
+            # Use parameterized column name from validated mapping
+            query += f" ORDER BY {safe_sort_by} {sort_order}"
             query += " LIMIT ? OFFSET ?"
             params.extend([limit, offset])
             
@@ -246,12 +251,16 @@ class AuditService:
                 params.append(ingestion_id)
             
             # Validate sort_by
-            allowed_sort_fields = [
-                "timestamp", "field_name", "rule_triggered",
-                "source_adapter", "record_id"
-            ]
-            if sort_by not in allowed_sort_fields:
-                sort_by = "timestamp"
+            # Use a mapping to ensure we only use predefined, safe column names
+            allowed_sort_fields = {
+                "timestamp": "timestamp",
+                "field_name": "field_name",
+                "rule_triggered": "rule_triggered",
+                "source_adapter": "source_adapter",
+                "record_id": "record_id"
+            }
+            # Get the safe column name from mapping, default to timestamp
+            safe_sort_by = allowed_sort_fields.get(sort_by, "timestamp")
             
             # Validate sort_order
             sort_order = sort_order.upper()
@@ -316,7 +325,8 @@ class AuditService:
                         summary_stats["by_adapter"][adapter] = summary_stats["by_adapter"].get(adapter, 0) + count
             
             # Add sorting and pagination
-            query += f" ORDER BY {sort_by} {sort_order}"
+            # Use parameterized column name from validated mapping
+            query += f" ORDER BY {safe_sort_by} {sort_order}"
             query += " LIMIT ? OFFSET ?"
             params.extend([limit, offset])
             
