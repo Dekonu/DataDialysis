@@ -239,70 +239,148 @@ class TestMetricsEndpoints:
 
 
 class TestAuditEndpoints:
-    """Test audit log endpoints (placeholders)."""
+    """Test audit log endpoints (now implemented in Phase 3)."""
     
-    def test_audit_logs_endpoint_exists(self, client):
-        """Test that audit logs endpoint exists."""
-        response = client.get("/api/audit-logs")
+    @pytest.fixture
+    def mock_storage_adapter(self):
+        """Mock storage adapter for testing."""
+        from unittest.mock import Mock
+        from src.domain.ports import Result
         
-        assert response.status_code == 200
-        data = response.json()
-        assert "message" in data
-        assert data["endpoint"] == "/api/audit-logs"
+        adapter = Mock()
+        adapter.initialize_schema.return_value = Result.success_result(None)
+        
+        # Mock connection
+        mock_conn = Mock()
+        adapter._get_connection = Mock(return_value=mock_conn)
+        
+        # Mock query results
+        mock_count_result = Mock()
+        mock_count_result.fetchone.return_value = (0,)
+        mock_data_result = Mock()
+        mock_data_result.fetchall.return_value = []
+        mock_conn.execute.side_effect = [mock_count_result, mock_data_result]
+        
+        return adapter
     
-    def test_audit_logs_endpoint_accepts_pagination(self, client):
+    def test_audit_logs_endpoint_exists(self, client, mock_storage_adapter):
+        """Test that audit logs endpoint exists and returns proper structure."""
+        from src.dashboard.api.dependencies import get_storage_adapter
+        app.dependency_overrides[get_storage_adapter] = lambda: mock_storage_adapter
+        
+        try:
+            response = client.get("/api/audit-logs")
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert "logs" in data
+            assert "pagination" in data
+            assert isinstance(data["logs"], list)
+            assert "total" in data["pagination"]
+        finally:
+            app.dependency_overrides.clear()
+    
+    def test_audit_logs_endpoint_accepts_pagination(self, client, mock_storage_adapter):
         """Test that audit logs endpoint accepts pagination parameters."""
-        response = client.get("/api/audit-logs?limit=50&offset=10")
+        from src.dashboard.api.dependencies import get_storage_adapter
+        app.dependency_overrides[get_storage_adapter] = lambda: mock_storage_adapter
         
-        assert response.status_code == 200
-        data = response.json()
-        assert data["limit"] == 50
-        assert data["offset"] == 10
+        try:
+            response = client.get("/api/audit-logs?limit=50&offset=10")
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert data["pagination"]["limit"] == 50
+            assert data["pagination"]["offset"] == 10
+        finally:
+            app.dependency_overrides.clear()
     
-    def test_audit_logs_endpoint_accepts_filters(self, client):
+    def test_audit_logs_endpoint_accepts_filters(self, client, mock_storage_adapter):
         """Test that audit logs endpoint accepts filter parameters."""
-        response = client.get(
-            "/api/audit-logs?severity=CRITICAL&event_type=REDACTION&start_date=2025-01-01"
-        )
+        from src.dashboard.api.dependencies import get_storage_adapter
+        app.dependency_overrides[get_storage_adapter] = lambda: mock_storage_adapter
         
-        assert response.status_code == 200
-        data = response.json()
-        assert "filters" in data
-        assert data["filters"]["severity"] == "CRITICAL"
-        assert data["filters"]["event_type"] == "REDACTION"
-        assert data["filters"]["start_date"] == "2025-01-01"
+        try:
+            # Use proper ISO date format
+            response = client.get(
+                "/api/audit-logs?severity=CRITICAL&event_type=REDACTION&start_date=2025-01-01T00:00:00Z"
+            )
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert "logs" in data
+            assert "pagination" in data
+        finally:
+            app.dependency_overrides.clear()
     
-    def test_redaction_logs_endpoint_exists(self, client):
-        """Test that redaction logs endpoint exists."""
-        response = client.get("/api/redaction-logs")
+    def test_redaction_logs_endpoint_exists(self, client, mock_storage_adapter):
+        """Test that redaction logs endpoint exists and returns proper structure."""
+        from src.dashboard.api.dependencies import get_storage_adapter
+        app.dependency_overrides[get_storage_adapter] = lambda: mock_storage_adapter
         
-        assert response.status_code == 200
-        data = response.json()
-        assert "message" in data
-        assert data["endpoint"] == "/api/redaction-logs"
+        # Update mock for redaction logs (needs 3 queries: count, summary, data)
+        mock_conn = mock_storage_adapter._get_connection.return_value
+        mock_summary_result = Mock()
+        mock_summary_result.fetchall.return_value = []
+        mock_count_result = Mock()
+        mock_count_result.fetchone.return_value = (0,)
+        mock_data_result = Mock()
+        mock_data_result.fetchall.return_value = []
+        mock_conn.execute.side_effect = [mock_count_result, mock_summary_result, mock_data_result]
+        
+        try:
+            response = client.get("/api/redaction-logs")
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert "logs" in data
+            assert "pagination" in data
+            assert "summary" in data
+            assert isinstance(data["logs"], list)
+        finally:
+            app.dependency_overrides.clear()
     
-    def test_redaction_logs_endpoint_accepts_filters(self, client):
+    def test_redaction_logs_endpoint_accepts_filters(self, client, mock_storage_adapter):
         """Test that redaction logs endpoint accepts filter parameters."""
-        response = client.get("/api/redaction-logs?field_name=ssn&time_range=24h&limit=100")
+        from src.dashboard.api.dependencies import get_storage_adapter
+        app.dependency_overrides[get_storage_adapter] = lambda: mock_storage_adapter
         
-        assert response.status_code == 200
-        data = response.json()
-        assert data["field_name"] == "ssn"
-        assert data["time_range"] == "24h"
-        assert data["limit"] == 100
+        # Update mock for redaction logs (needs 3 queries: count, summary, data)
+        mock_conn = mock_storage_adapter._get_connection.return_value
+        mock_summary_result = Mock()
+        mock_summary_result.fetchall.return_value = []
+        mock_count_result = Mock()
+        mock_count_result.fetchone.return_value = (0,)
+        mock_data_result = Mock()
+        mock_data_result.fetchall.return_value = []
+        mock_conn.execute.side_effect = [mock_count_result, mock_summary_result, mock_data_result]
+        
+        try:
+            response = client.get("/api/redaction-logs?field_name=ssn&time_range=24h&limit=100")
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert "logs" in data
+            assert "pagination" in data
+            assert data["pagination"]["limit"] == 100
+        finally:
+            app.dependency_overrides.clear()
 
 
 class TestCircuitBreakerEndpoint:
-    """Test circuit breaker status endpoint (placeholder)."""
+    """Test circuit breaker status endpoint (now implemented in Phase 3)."""
     
     def test_circuit_breaker_endpoint_exists(self, client):
-        """Test that circuit breaker status endpoint exists."""
+        """Test that circuit breaker status endpoint exists and returns proper structure."""
         response = client.get("/api/circuit-breaker/status")
         
         assert response.status_code == 200
         data = response.json()
-        assert "message" in data
-        assert data["endpoint"] == "/api/circuit-breaker/status"
+        assert "is_open" in data
+        assert "failure_rate" in data
+        assert "threshold" in data
+        assert isinstance(data["is_open"], bool)
+        assert isinstance(data["failure_rate"], (int, float))
 
 
 class TestWebSocketEndpoint:
@@ -423,23 +501,68 @@ class TestResponseFormat:
     
     def test_all_responses_are_json(self, client):
         """Test that all API responses are JSON (except docs)."""
-        endpoints = [
-            "/",
-            "/api/health",
-            "/api/metrics/overview",
-            "/api/metrics/security",
-            "/api/metrics/performance",
-            "/api/audit-logs",
-            "/api/redaction-logs",
-            "/api/circuit-breaker/status",
-        ]
+        from unittest.mock import Mock
+        from src.dashboard.api.dependencies import get_storage_adapter
+        from src.domain.ports import Result
         
-        for endpoint in endpoints:
-            response = client.get(endpoint)
-            assert response.status_code == 200
-            # Should be JSON
-            assert "application/json" in response.headers.get("content-type", "")
-            # Should be parseable
-            data = response.json()
+        # Mock storage adapter for endpoints that need it
+        mock_adapter = Mock()
+        mock_adapter.initialize_schema.return_value = Result.success_result(None)
+        
+        # Set up db_config with proper string values (needed for health endpoint)
+        mock_adapter.db_config = Mock()
+        mock_adapter.db_config.db_type = "duckdb"  # String, not Mock
+        mock_adapter.db_config.db_path = ":memory:"
+        
+        mock_conn = Mock()
+        mock_adapter._get_connection = Mock(return_value=mock_conn)
+        
+        # Mock query results - need separate mocks for each query type
+        # Redaction logs needs: count (fetchone), summary (fetchall), data (fetchall)
+        mock_count_result = Mock()
+        mock_count_result.fetchone.return_value = (0,)
+        mock_summary_result = Mock()
+        mock_summary_result.fetchall.return_value = []
+        mock_data_result = Mock()
+        mock_data_result.fetchall.return_value = []
+        
+        # Track call count to return correct mock for each query
+        call_count = [0]
+        
+        def execute_side_effect(*args, **kwargs):
+            query = args[0] if args else ""
+            # For redaction logs: count, summary, data (in that order)
+            if "GROUP BY" in query:
+                return mock_summary_result
+            elif "COUNT(*)" in query or "SELECT COUNT" in query:
+                return mock_count_result
+            else:
+                return mock_data_result
+        
+        mock_conn.execute.side_effect = execute_side_effect
+        
+        app.dependency_overrides[get_storage_adapter] = lambda: mock_adapter
+        
+        try:
+            endpoints = [
+                "/",
+                "/api/health",
+                "/api/metrics/overview",
+                "/api/metrics/security",
+                "/api/metrics/performance",
+                "/api/audit-logs",
+                "/api/redaction-logs",
+                "/api/circuit-breaker/status",
+            ]
+            
+            for endpoint in endpoints:
+                response = client.get(endpoint)
+                assert response.status_code == 200, f"Endpoint {endpoint} returned {response.status_code}: {response.json() if response.status_code != 200 else ''}"
+                # Should be JSON
+                assert "application/json" in response.headers.get("content-type", ""), f"Endpoint {endpoint} is not JSON"
+                # Should be parseable
+                data = response.json()
+        finally:
+            app.dependency_overrides.clear()
             assert isinstance(data, dict)
 
