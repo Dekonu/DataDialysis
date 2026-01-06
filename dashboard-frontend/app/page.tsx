@@ -1,10 +1,14 @@
-import { Suspense } from 'react';
+import { Suspense, lazy } from 'react';
 import { api } from '@/lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { MetricsCard } from '@/components/dashboard/metrics-card';
 import { TimeRangeSelector } from '@/components/dashboard/time-range-selector';
 import type { TimeRange } from '@/types/api';
+
+// Lazy load heavy components for better initial load performance
+const RealtimeMetrics = lazy(() => 
+  import('@/components/dashboard/realtime-metrics').then(mod => ({ default: mod.RealtimeMetrics }))
+);
 
 async function HealthStatus() {
   let health;
@@ -158,173 +162,8 @@ async function DashboardContent({ timeRange }: DashboardContentProps) {
     );
   }
 
-  const successRate = metrics.ingestions.success_rate;
-  const recordSuccessRate =
-    metrics.records.total_processed > 0
-      ? metrics.records.total_successful / metrics.records.total_processed
-      : 0;
-
-  // Determine variant based on data availability and success rate
-  const getIngestionVariant = () => {
-    if (metrics.ingestions.total === 0) return 'default'; // No data = neutral
-    if (successRate >= 0.95) return 'success';
-    if (successRate >= 0.8) return 'warning';
-    return 'destructive';
-  };
-
-  const getRecordVariant = () => {
-    if (metrics.records.total_processed === 0) return 'default'; // No data = neutral
-    if (recordSuccessRate >= 0.95) return 'success';
-    if (recordSuccessRate >= 0.8) return 'warning';
-    return 'destructive';
-  };
-
-  const getCircuitBreakerVariant = () => {
-    if (!metrics.circuit_breaker || !metrics.circuit_breaker.status) return 'default'; // Unknown = neutral
-    if (metrics.circuit_breaker.status === 'closed') return 'success';
-    if (metrics.circuit_breaker.status === 'half_open') return 'warning';
-    return 'destructive';
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <MetricsCard
-          title="Total Ingestions"
-          value={metrics.ingestions.total}
-          description={`${metrics.ingestions.successful} successful, ${metrics.ingestions.failed} failed`}
-          trend={metrics.ingestions.total > 0 ? successRate : null}
-          trendLabel="success rate"
-          variant={getIngestionVariant()}
-          formatType="number"
-        />
-
-        <MetricsCard
-          title="Records Processed"
-          value={metrics.records.total_processed}
-          description={`${metrics.records.total_successful} successful, ${metrics.records.total_failed} failed`}
-          trend={metrics.records.total_processed > 0 ? recordSuccessRate : null}
-          trendLabel="success rate"
-          variant={getRecordVariant()}
-          formatType="number"
-        />
-
-        <MetricsCard
-          title="PII Redactions"
-          value={metrics.redactions.total}
-          description="Total redactions performed"
-          variant="default"
-          formatType="number"
-        />
-
-        <MetricsCard
-          title="Circuit Breaker"
-          value={metrics.circuit_breaker?.status || 'N/A'}
-          description={
-            metrics.circuit_breaker?.failure_rate !== null &&
-            metrics.circuit_breaker?.failure_rate !== undefined
-              ? `${(metrics.circuit_breaker.failure_rate * 100).toFixed(1)}% failure rate`
-              : 'Status unknown'
-          }
-          variant={getCircuitBreakerVariant()}
-          formatType="plain"
-        />
-      </div>
-
-      {/* Additional metrics section */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <Card>
-          <CardHeader>
-            <CardTitle>Ingestion Metrics</CardTitle>
-            <CardDescription>Detailed ingestion statistics</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Success Rate</span>
-                <span className="text-sm font-bold">
-                  {(successRate * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Successful</span>
-                <span className="text-sm text-muted-foreground">
-                  {metrics.ingestions.successful.toLocaleString()}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Failed</span>
-                <span className="text-sm text-muted-foreground">
-                  {metrics.ingestions.failed.toLocaleString()}
-                </span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Record Processing</CardTitle>
-            <CardDescription>Record processing statistics</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Success Rate</span>
-                <span className="text-sm font-bold">
-                  {(recordSuccessRate * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Successful</span>
-                <span className="text-sm text-muted-foreground">
-                  {metrics.records.total_successful.toLocaleString()}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Failed</span>
-                <span className="text-sm text-muted-foreground">
-                  {metrics.records.total_failed.toLocaleString()}
-                </span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Redaction Summary</CardTitle>
-            <CardDescription>PII redaction statistics</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Total Redactions</span>
-                <span className="text-sm font-bold">
-                  {metrics.redactions.total.toLocaleString()}
-                </span>
-              </div>
-              {Object.keys(metrics.redactions.by_field).length > 0 && (
-                <div className="mt-4">
-                  <p className="text-xs font-medium mb-2">By Field:</p>
-                  <div className="space-y-1">
-                    {Object.entries(metrics.redactions.by_field)
-                      .slice(0, 3)
-                      .map(([field, count]) => (
-                        <div key={field} className="flex items-center justify-between text-xs">
-                          <span className="text-muted-foreground">{field}</span>
-                          <span>{count.toLocaleString()}</span>
-                        </div>
-                      ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
+  // Pass metrics to real-time component for WebSocket updates
+  return <RealtimeMetrics initialMetrics={metrics} timeRange={timeRange} />;
 }
 
 export default async function HomePage({
@@ -335,22 +174,22 @@ export default async function HomePage({
   const timeRange = (searchParams.timeRange as TimeRange) || '24h';
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 sm:space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Dashboard Overview</h2>
-          <p className="text-muted-foreground">
+          <h2 className="text-2xl sm:text-3xl font-bold tracking-tight">Dashboard Overview</h2>
+          <p className="text-sm sm:text-base text-muted-foreground mt-1">
             Monitor the health and performance of your Data-Dialysis pipeline
           </p>
         </div>
-        <Suspense fallback={<div className="w-[180px] h-10 bg-muted animate-pulse rounded-md" />}>
+        <Suspense fallback={<div className="w-full sm:w-[180px] h-10 bg-muted animate-pulse rounded-md" />}>
           <TimeRangeSelector defaultValue={timeRange} />
         </Suspense>
       </div>
 
       {/* Health Status Section */}
       <div>
-        <h3 className="text-xl font-semibold mb-4">System Health</h3>
+        <h3 className="text-lg sm:text-xl font-semibold mb-3 sm:mb-4">System Health</h3>
         <Suspense
           fallback={
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -373,7 +212,7 @@ export default async function HomePage({
 
       {/* Metrics Section */}
       <div>
-        <h3 className="text-xl font-semibold mb-4">Metrics</h3>
+        <h3 className="text-lg sm:text-xl font-semibold mb-3 sm:mb-4">Metrics</h3>
         <Suspense
           fallback={
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

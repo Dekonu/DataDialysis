@@ -69,9 +69,9 @@ export function MetricsCard({
   };
 
   return (
-    <Card className={cn(getVariantStyles())}>
+    <Card className={cn(getVariantStyles(), 'transition-all duration-200 hover:shadow-md hover:scale-[1.02]')}>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium">{title}</CardTitle>
+        <CardTitle className="text-xs sm:text-sm font-medium">{title}</CardTitle>
         {variant !== 'default' && (
           <Badge
             variant={
@@ -81,15 +81,16 @@ export function MetricsCard({
                 ? 'secondary'
                 : 'destructive'
             }
+            className="text-xs"
           >
             {variant}
           </Badge>
         )}
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-bold">{formattedValue}</div>
+        <div className="text-xl sm:text-2xl font-bold">{formattedValue}</div>
         {description && (
-          <p className="text-xs text-muted-foreground mt-1">{description}</p>
+          <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{description}</p>
         )}
         {trend !== null && trend !== undefined && (
           <div className={cn('flex items-center gap-1 mt-2 text-xs', getTrendColor())}>
@@ -98,7 +99,7 @@ export function MetricsCard({
               {trend > 0 ? '+' : ''}
               {typeof trend === 'number' ? (trend * 100).toFixed(1) : trend}%
             </span>
-            {trendLabel && <span className="text-muted-foreground">vs {trendLabel}</span>}
+            {trendLabel && <span className="text-muted-foreground hidden sm:inline">vs {trendLabel}</span>}
           </div>
         )}
       </CardContent>
