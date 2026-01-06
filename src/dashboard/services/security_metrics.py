@@ -179,42 +179,44 @@ class SecurityMetricsService:
             if not hasattr(self.storage, '_get_connection'):
                 return AuditEventSummary(total=0)
             
-            conn = self.storage._get_connection()
-            
-            # Get total count
-            total_query = """
-                SELECT COUNT(*) as total
-                FROM audit_log
-                WHERE event_timestamp >= ? AND event_timestamp <= ?
-            """
-            total_result = conn.execute(total_query, [start_time, end_time]).fetchone()
-            total = total_result[0] if total_result and total_result[0] else 0
-            
-            # Get by severity
-            severity_query = """
-                SELECT severity, COUNT(*) as count
-                FROM audit_log
-                WHERE event_timestamp >= ? AND event_timestamp <= ?
-                GROUP BY severity
-            """
-            severity_results = conn.execute(severity_query, [start_time, end_time]).fetchall()
-            by_severity = {row[0]: row[1] for row in severity_results if row[0] and row[1]}
-            
-            # Get by event type
-            type_query = """
-                SELECT event_type, COUNT(*) as count
-                FROM audit_log
-                WHERE event_timestamp >= ? AND event_timestamp <= ?
-                GROUP BY event_type
-            """
-            type_results = conn.execute(type_query, [start_time, end_time]).fetchall()
-            by_type = {row[0]: row[1] for row in type_results if row[0] and row[1]}
-            
-            return AuditEventSummary(
-                total=total,
-                by_severity=by_severity,
-                by_type=by_type
-            )
+            with get_db_connection(self.storage) as conn:
+                if conn is None:
+                    return AuditEventSummary(total=0)
+                
+                # Get total count
+                total_query = """
+                    SELECT COUNT(*) as total
+                    FROM audit_log
+                    WHERE event_timestamp >= ? AND event_timestamp <= ?
+                """
+                total_result = conn.execute(total_query, [start_time, end_time]).fetchone()
+                total = total_result[0] if total_result and total_result[0] else 0
+                
+                # Get by severity
+                severity_query = """
+                    SELECT severity, COUNT(*) as count
+                    FROM audit_log
+                    WHERE event_timestamp >= ? AND event_timestamp <= ?
+                    GROUP BY severity
+                """
+                severity_results = conn.execute(severity_query, [start_time, end_time]).fetchall()
+                by_severity = {row[0]: row[1] for row in severity_results if row[0] and row[1]}
+                
+                # Get by event type
+                type_query = """
+                    SELECT event_type, COUNT(*) as count
+                    FROM audit_log
+                    WHERE event_timestamp >= ? AND event_timestamp <= ?
+                    GROUP BY event_type
+                """
+                type_results = conn.execute(type_query, [start_time, end_time]).fetchall()
+                by_type = {row[0]: row[1] for row in type_results if row[0] and row[1]}
+                
+                return AuditEventSummary(
+                    total=total,
+                    by_severity=by_severity,
+                    by_type=by_type
+                )
             
         except Exception as e:
             logger.warning(f"Error getting audit event metrics: {str(e)}")

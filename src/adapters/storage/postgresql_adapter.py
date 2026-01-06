@@ -20,6 +20,7 @@ Architecture:
 
 import logging
 import uuid
+import threading
 from datetime import datetime
 from typing import Optional, Any
 from urllib.parse import quote_plus
@@ -142,6 +143,8 @@ class PostgreSQLAdapter(StoragePort):
         self.config = config or {}
         self._connection_pool: Optional[pool.ThreadedConnectionPool] = None
         self._initialized = False
+        self._schema_initialized = False  # Cache flag for schema initialization
+        self._schema_lock = threading.Lock()  # Thread-safe lock for schema initialization
         
         # Use DatabaseConfig if provided (preferred method)
         if db_config:
@@ -275,6 +278,7 @@ class PostgreSQLAdapter(StoragePort):
         - encounters: Encounter/visit records
         - observations: Clinical observation records
         - audit_log: Immutable audit trail
+        - logs: Redaction logs for PII tracking
         
         Returns:
             Result[None]: Success or failure result
@@ -284,14 +288,29 @@ class PostgreSQLAdapter(StoragePort):
             - Audit log table is append-only
             - Indexes optimize query performance
             - Foreign keys enforce referential integrity
+        
+        Note:
+            Schema initialization is cached per adapter instance to prevent
+            repeated database calls. The cache is thread-safe.
         """
-        conn = None
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
+        # Return early if schema is already initialized (cached)
+        # Use double-checked locking pattern for thread safety
+        if self._schema_initialized:
+            return Result.success_result(None)
+        
+        # Acquire lock to prevent concurrent schema initialization
+        with self._schema_lock:
+            # Check again after acquiring lock (double-checked locking)
+            if self._schema_initialized:
+                return Result.success_result(None)
             
-            # Create patients table
-            cursor.execute("""
+            conn = None
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                
+                # Create patients table
+                cursor.execute("""
                 CREATE TABLE IF NOT EXISTS patients (
                     patient_id VARCHAR(50) PRIMARY KEY,
                     identifiers TEXT[],
@@ -323,10 +342,10 @@ class PostgreSQLAdapter(StoragePort):
                     source_adapter VARCHAR(50) NOT NULL,
                     transformation_hash VARCHAR(64)
                 )
-            """)
-            
-            # Create encounters table
-            cursor.execute("""
+                """)
+                
+                # Create encounters table
+                cursor.execute("""
                 CREATE TABLE IF NOT EXISTS encounters (
                     encounter_id VARCHAR(50) PRIMARY KEY,
                     patient_id VARCHAR(50) NOT NULL,
@@ -350,10 +369,10 @@ class PostgreSQLAdapter(StoragePort):
                     transformation_hash VARCHAR(64),
                     FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE
                 )
-            """)
-            
-            # Create observations table
-            cursor.execute("""
+                """)
+                
+                # Create observations table
+                cursor.execute("""
                 CREATE TABLE IF NOT EXISTS observations (
                     observation_id VARCHAR(50) PRIMARY KEY,
                     patient_id VARCHAR(50) NOT NULL,
@@ -378,10 +397,10 @@ class PostgreSQLAdapter(StoragePort):
                     FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE,
                     FOREIGN KEY (encounter_id) REFERENCES encounters(encounter_id) ON DELETE CASCADE
                 )
-            """)
-            
-            # Create audit log table (immutable, append-only)
-            cursor.execute("""
+                """)
+                
+                # Create audit log table (immutable, append-only)
+                cursor.execute("""
                 CREATE TABLE IF NOT EXISTS audit_log (
                     audit_id VARCHAR(50) PRIMARY KEY,
                     event_type VARCHAR(50) NOT NULL,
@@ -392,10 +411,26 @@ class PostgreSQLAdapter(StoragePort):
                     source_adapter VARCHAR(50),
                     severity VARCHAR(20)
                 )
-            """)
-            
-            # Create indexes for performance
-            indexes = [
+                """)
+                
+                # Create redaction logs table for detailed PII redaction tracking
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS logs (
+                    log_id VARCHAR(50) PRIMARY KEY,
+                    field_name VARCHAR(50) NOT NULL,
+                    original_hash VARCHAR(64) NOT NULL,
+                    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    rule_triggered VARCHAR(50) NOT NULL,
+                    record_id VARCHAR(50),
+                    source_adapter VARCHAR(50),
+                    ingestion_id VARCHAR(50),
+                    redacted_value VARCHAR(255),
+                    original_value_length INTEGER
+                )
+                """)
+                
+                # Create indexes for performance
+                indexes = [
                 "CREATE INDEX IF NOT EXISTS idx_patients_source ON patients(source_adapter)",
                 "CREATE INDEX IF NOT EXISTS idx_patients_timestamp ON patients(ingestion_timestamp)",
                 "CREATE INDEX IF NOT EXISTS idx_encounters_patient ON encounters(patient_id)",
@@ -407,31 +442,36 @@ class PostgreSQLAdapter(StoragePort):
                 "CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(event_timestamp)",
                 "CREATE INDEX IF NOT EXISTS idx_audit_record_id ON audit_log(record_id)",
                 "CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_log(severity)",
-            ]
-            
-            for index_sql in indexes:
-                cursor.execute(index_sql)
-            
-            conn.commit()
-            cursor.close()
-            
-            self._initialized = True
-            logger.info("PostgreSQL database schema initialized successfully")
-            
-            return Result.success_result(None)
-            
-        except Exception as e:
-            if conn:
-                conn.rollback()
-            error_msg = f"Failed to initialize schema: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            return Result.failure_result(
-                StorageError(error_msg, operation="initialize_schema"),
-                error_type="StorageError"
-            )
-        finally:
-            if conn:
-                self._return_connection(conn)
+                "CREATE INDEX IF NOT EXISTS idx_logs_field_name ON logs(field_name)",
+                "CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)",
+                "CREATE INDEX IF NOT EXISTS idx_logs_rule_triggered ON logs(rule_triggered)",
+                "CREATE INDEX IF NOT EXISTS idx_logs_record_id ON logs(record_id)",
+                ]
+                
+                for index_sql in indexes:
+                    cursor.execute(index_sql)
+                
+                conn.commit()
+                cursor.close()
+                
+                self._initialized = True
+                self._schema_initialized = True  # Cache the initialization
+                logger.info("PostgreSQL database schema initialized successfully")
+                
+                return Result.success_result(None)
+                
+            except Exception as e:
+                if conn:
+                    conn.rollback()
+                error_msg = f"Failed to initialize schema: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                return Result.failure_result(
+                    StorageError(error_msg, operation="initialize_schema"),
+                    error_type="StorageError"
+                )
+            finally:
+                if conn:
+                    self._return_connection(conn)
     
     def persist(self, record: GoldenRecord) -> Result[str]:
         """Persist a single GoldenRecord to storage.
