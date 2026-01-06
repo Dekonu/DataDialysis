@@ -14,6 +14,7 @@ from typing import Optional
 from src.domain.guardrails import CircuitBreaker, CircuitBreakerConfig
 from src.domain.ports import Result, StoragePort
 from src.dashboard.models.circuit_breaker import CircuitBreakerStatus
+from src.dashboard.services.connection_helper import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -100,55 +101,69 @@ class CircuitBreakerService:
                     min_records_before_check=default_config.min_records_before_check
                 ))
             
-            conn = self.storage._get_connection()
-            
-            # Query recent errors from audit log
-            # Use parameterized query - adjust for DuckDB vs PostgreSQL
-            one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
-            
-            try:
-                error_query = """
-                    SELECT COUNT(*) as error_count
-                    FROM audit_log
-                    WHERE severity IN ('ERROR', 'CRITICAL')
-                    AND event_timestamp >= ?
-                """
+            with get_db_connection(self.storage) as conn:
+                if conn is None:
+                    # Return default closed status if we can't query
+                    default_config = CircuitBreakerConfig()
+                    return Result.success_result(CircuitBreakerStatus(
+                        is_open=False,
+                        failure_rate=0.0,
+                        threshold=default_config.failure_threshold_percent,
+                        total_processed=0,
+                        total_failures=0,
+                        window_size=default_config.window_size,
+                        failures_in_window=0,
+                        records_in_window=0,
+                        min_records_before_check=default_config.min_records_before_check
+                    ))
                 
-                error_result = conn.execute(error_query, [one_hour_ago]).fetchone()
-                error_count = error_result[0] if error_result else 0
+                # Query recent errors from audit log
+                # Use parameterized query - adjust for DuckDB vs PostgreSQL
+                one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
                 
-                # Query total events
-                total_query = """
-                    SELECT COUNT(*) as total_count
-                    FROM audit_log
-                    WHERE event_timestamp >= ?
-                """
+                try:
+                    error_query = """
+                        SELECT COUNT(*) as error_count
+                        FROM audit_log
+                        WHERE severity IN ('ERROR', 'CRITICAL')
+                        AND event_timestamp >= ?
+                    """
+                    
+                    error_result = conn.execute(error_query, [one_hour_ago]).fetchone()
+                    error_count = error_result[0] if error_result else 0
+                    
+                    # Query total events
+                    total_query = """
+                        SELECT COUNT(*) as total_count
+                        FROM audit_log
+                        WHERE event_timestamp >= ?
+                    """
+                    
+                    total_result = conn.execute(total_query, [one_hour_ago]).fetchone()
+                    total_count = total_result[0] if total_result else 0
+                except Exception:
+                    # If query fails, return default closed status
+                    error_count = 0
+                    total_count = 0
                 
-                total_result = conn.execute(total_query, [one_hour_ago]).fetchone()
-                total_count = total_result[0] if total_result else 0
-            except Exception:
-                # If query fails, return default closed status
-                error_count = 0
-                total_count = 0
-            
-            # Calculate failure rate
-            failure_rate = (error_count / total_count * 100.0) if total_count > 0 else 0.0
-            
-            # Use default config
-            default_config = CircuitBreakerConfig()
-            is_open = failure_rate >= default_config.failure_threshold_percent
-            
-            return Result.success_result(CircuitBreakerStatus(
-                is_open=is_open,
-                failure_rate=failure_rate,
-                threshold=default_config.failure_threshold_percent,
-                total_processed=total_count,
-                total_failures=error_count,
-                window_size=default_config.window_size,
-                failures_in_window=error_count,
-                records_in_window=total_count,
-                min_records_before_check=default_config.min_records_before_check
-            ))
+                # Calculate failure rate
+                failure_rate = (error_count / total_count * 100.0) if total_count > 0 else 0.0
+                
+                # Use default config
+                default_config = CircuitBreakerConfig()
+                is_open = failure_rate >= default_config.failure_threshold_percent
+                
+                return Result.success_result(CircuitBreakerStatus(
+                    is_open=is_open,
+                    failure_rate=failure_rate,
+                    threshold=default_config.failure_threshold_percent,
+                    total_processed=total_count,
+                    total_failures=error_count,
+                    window_size=default_config.window_size,
+                    failures_in_window=error_count,
+                    records_in_window=total_count,
+                    min_records_before_check=default_config.min_records_before_check
+                ))
             
         except Exception as e:
             error_msg = f"Failed to get circuit breaker status: {str(e)}"

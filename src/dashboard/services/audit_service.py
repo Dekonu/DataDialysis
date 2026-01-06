@@ -16,6 +16,7 @@ from src.dashboard.models.audit import (
     RedactionLogEntry,
     RedactionLogsResponse,
 )
+from src.dashboard.services.connection_helper import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -103,28 +104,30 @@ class AuditService:
             if sort_order not in ["ASC", "DESC"]:
                 sort_order = "DESC"
             
-            # Get connection
-            if not hasattr(self.storage, '_get_connection'):
-                return Result.failure_result(
-                    Exception("Storage adapter does not support query operations"),
-                    error_type="AuditServiceError"
-                )
+            # Get connection using context manager
+            result = None
+            total = 0
             
-            conn = self.storage._get_connection()
-            
-            # Get total count
-            count_query = query.replace("SELECT *", "SELECT COUNT(*)")
-            count_result = conn.execute(count_query, params).fetchone()
-            total = count_result[0] if count_result else 0
-            
-            # Add sorting and pagination
-            # Use validated column name from allowlist
-            query += f" ORDER BY {safe_sort_by} {sort_order}"
-            query += " LIMIT ? OFFSET ?"
-            params.extend([limit, offset])
-            
-            # Execute query
-            result = conn.execute(query, params).fetchall()
+            with get_db_connection(self.storage) as conn:
+                if conn is None:
+                    return Result.failure_result(
+                        Exception("Storage adapter does not support query operations"),
+                        error_type="AuditServiceError"
+                    )
+                
+                # Get total count
+                count_query = query.replace("SELECT *", "SELECT COUNT(*)")
+                count_result = conn.execute(count_query, params).fetchone()
+                total = count_result[0] if count_result else 0
+                
+                # Add sorting and pagination
+                # Use validated column name from allowlist
+                query += f" ORDER BY {safe_sort_by} {sort_order}"
+                query += " LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+                
+                # Execute query
+                result = conn.execute(query, params).fetchall()
             
             # Convert to AuditLogEntry objects
             logs = []
@@ -268,64 +271,69 @@ class AuditService:
                     error_type="AuditServiceError"
                 )
             
-            conn = self.storage._get_connection()
-            
-            # Get total count
-            count_query = query.replace("SELECT *", "SELECT COUNT(*)")
-            count_result = conn.execute(count_query, params).fetchone()
-            total = count_result[0] if count_result else 0
-            
-            # Get summary statistics
-            summary_query = """
-                SELECT 
-                    COUNT(*) as total,
-                    field_name,
-                    rule_triggered,
-                    source_adapter
-                FROM logs
-                WHERE timestamp >= ?
-            """
-            summary_params = [start_date]
-            
-            if field_name:
-                summary_query += " AND field_name = ?"
-                summary_params.append(field_name)
-            
-            summary_query += " GROUP BY field_name, rule_triggered, source_adapter"
-            
-            summary_result = conn.execute(summary_query, summary_params).fetchall()
-            summary_stats = {
-                "total_redactions": total,
-                "by_field": {},
-                "by_rule": {},
-                "by_adapter": {}
-            }
-            
-            if summary_result:
-                for row in summary_result:
-                    if isinstance(row, (list, tuple)):
-                        count, field, rule, adapter = row
-                    else:
-                        count = row.get("total", 0)
-                        field = row.get("field_name")
-                        rule = row.get("rule_triggered")
-                        adapter = row.get("source_adapter")
-                    
-                    if field:
-                        summary_stats["by_field"][field] = summary_stats["by_field"].get(field, 0) + count
-                    if rule:
-                        summary_stats["by_rule"][rule] = summary_stats["by_rule"].get(rule, 0) + count
-                    if adapter:
-                        summary_stats["by_adapter"][adapter] = summary_stats["by_adapter"].get(adapter, 0) + count
-            
-            # Add sorting and pagination
-            # Use validated column name from allowlist
-            query += f" ORDER BY {safe_sort_by} {sort_order}"
-            query += " LIMIT ? OFFSET ?"
-            params.extend([limit, offset])
-            
-            # Execute query
-            result = conn.execute(query, params).fetchall()
+            with get_db_connection(self.storage) as conn:
+                if conn is None:
+                    return Result.failure_result(
+                        Exception("Storage adapter does not support query operations"),
+                        error_type="AuditServiceError"
+                    )
+                
+                # Get total count
+                count_query = query.replace("SELECT *", "SELECT COUNT(*)")
+                count_result = conn.execute(count_query, params).fetchone()
+                total = count_result[0] if count_result else 0
+                
+                # Get summary statistics
+                summary_query = """
+                    SELECT 
+                        COUNT(*) as total,
+                        field_name,
+                        rule_triggered,
+                        source_adapter
+                    FROM logs
+                    WHERE timestamp >= ?
+                """
+                summary_params = [start_date]
+                
+                if field_name:
+                    summary_query += " AND field_name = ?"
+                    summary_params.append(field_name)
+                
+                summary_query += " GROUP BY field_name, rule_triggered, source_adapter"
+                
+                summary_result = conn.execute(summary_query, summary_params).fetchall()
+                summary_stats = {
+                    "total_redactions": total,
+                    "by_field": {},
+                    "by_rule": {},
+                    "by_adapter": {}
+                }
+                
+                if summary_result:
+                    for row in summary_result:
+                        if isinstance(row, (list, tuple)):
+                            count, field, rule, adapter = row
+                        else:
+                            count = row.get("total", 0)
+                            field = row.get("field_name")
+                            rule = row.get("rule_triggered")
+                            adapter = row.get("source_adapter")
+                        
+                        if field:
+                            summary_stats["by_field"][field] = summary_stats["by_field"].get(field, 0) + count
+                        if rule:
+                            summary_stats["by_rule"][rule] = summary_stats["by_rule"].get(rule, 0) + count
+                        if adapter:
+                            summary_stats["by_adapter"][adapter] = summary_stats["by_adapter"].get(adapter, 0) + count
+                
+                # Add sorting and pagination
+                # Use validated column name from allowlist
+                query += f" ORDER BY {safe_sort_by} {sort_order}"
+                query += " LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+                
+                # Execute query
+                result = conn.execute(query, params).fetchall()
             
             # Convert to RedactionLogEntry objects
             logs = []
@@ -354,21 +362,21 @@ class AuditService:
                         redacted_value=row_dict.get("redacted_value"),
                         original_value_length=row_dict.get("original_value_length")
                     ))
-            
-            # Build pagination metadata
-            pagination = PaginationMeta(
-                total=total,
-                limit=limit,
-                offset=offset,
-                has_next=(offset + limit) < total,
-                has_previous=offset > 0
-            )
-            
-            return Result.success_result(RedactionLogsResponse(
-                logs=logs,
-                pagination=pagination,
-                summary=summary_stats
-            ))
+                
+                # Build pagination metadata
+                pagination = PaginationMeta(
+                    total=total,
+                    limit=limit,
+                    offset=offset,
+                    has_next=(offset + limit) < total,
+                    has_previous=offset > 0
+                )
+                
+                return Result.success_result(RedactionLogsResponse(
+                    logs=logs,
+                    pagination=pagination,
+                    summary=summary_stats
+                ))
             
         except Exception as e:
             error_msg = f"Failed to get redaction logs: {str(e)}"

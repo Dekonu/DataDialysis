@@ -15,6 +15,7 @@ from src.dashboard.models.metrics import (
     AuditEventSummary,
     RedactionTrendPoint
 )
+from src.dashboard.services.connection_helper import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -99,60 +100,62 @@ class SecurityMetricsService:
             if not hasattr(self.storage, '_get_connection'):
                 return SecurityRedactions(total=0)
             
-            conn = self.storage._get_connection()
-            
-            # Get total count
-            total_query = """
-                SELECT COUNT(*) as total
-                FROM logs
-                WHERE timestamp >= ? AND timestamp <= ?
-            """
-            total_result = conn.execute(total_query, [start_time, end_time]).fetchone()
-            total = total_result[0] if total_result and total_result[0] else 0
-            
-            # Get by rule
-            rule_query = """
-                SELECT rule_triggered, COUNT(*) as count
-                FROM logs
-                WHERE timestamp >= ? AND timestamp <= ?
-                GROUP BY rule_triggered
-            """
-            rule_results = conn.execute(rule_query, [start_time, end_time]).fetchall()
-            by_rule = {row[0]: row[1] for row in rule_results if row[0] and row[1]}
-            
-            # Get by adapter
-            adapter_query = """
-                SELECT source_adapter, COUNT(*) as count
-                FROM logs
-                WHERE timestamp >= ? AND timestamp <= ?
-                GROUP BY source_adapter
-            """
-            adapter_results = conn.execute(adapter_query, [start_time, end_time]).fetchall()
-            by_adapter = {row[0]: row[1] for row in adapter_results if row[0] and row[1]}
-            
-            # Get trend data (daily counts)
-            trend_query = """
-                SELECT 
-                    DATE(timestamp) as date,
-                    COUNT(*) as count
-                FROM logs
-                WHERE timestamp >= ? AND timestamp <= ?
-                GROUP BY DATE(timestamp)
-                ORDER BY date
-            """
-            trend_results = conn.execute(trend_query, [start_time, end_time]).fetchall()
-            trend = [
-                RedactionTrendPoint(date=str(row[0]), count=row[1])
-                for row in trend_results
-                if row[0] and row[1]
-            ]
-            
-            return SecurityRedactions(
-                total=total,
-                by_rule=by_rule,
-                by_adapter=by_adapter,
-                trend=trend
-            )
+            with get_db_connection(self.storage) as conn:
+                if conn is None:
+                    return SecurityRedactions(total=0)
+                
+                # Get total count
+                total_query = """
+                    SELECT COUNT(*) as total
+                    FROM logs
+                    WHERE timestamp >= ? AND timestamp <= ?
+                """
+                total_result = conn.execute(total_query, [start_time, end_time]).fetchone()
+                total = total_result[0] if total_result and total_result[0] else 0
+                
+                # Get by rule
+                rule_query = """
+                    SELECT rule_triggered, COUNT(*) as count
+                    FROM logs
+                    WHERE timestamp >= ? AND timestamp <= ?
+                    GROUP BY rule_triggered
+                """
+                rule_results = conn.execute(rule_query, [start_time, end_time]).fetchall()
+                by_rule = {row[0]: row[1] for row in rule_results if row[0] and row[1]}
+                
+                # Get by adapter
+                adapter_query = """
+                    SELECT source_adapter, COUNT(*) as count
+                    FROM logs
+                    WHERE timestamp >= ? AND timestamp <= ?
+                    GROUP BY source_adapter
+                """
+                adapter_results = conn.execute(adapter_query, [start_time, end_time]).fetchall()
+                by_adapter = {row[0]: row[1] for row in adapter_results if row[0] and row[1]}
+                
+                # Get trend data (daily counts)
+                trend_query = """
+                    SELECT 
+                        DATE(timestamp) as date,
+                        COUNT(*) as count
+                    FROM logs
+                    WHERE timestamp >= ? AND timestamp <= ?
+                    GROUP BY DATE(timestamp)
+                    ORDER BY date
+                """
+                trend_results = conn.execute(trend_query, [start_time, end_time]).fetchall()
+                trend = [
+                    RedactionTrendPoint(date=str(row[0]), count=row[1])
+                    for row in trend_results
+                    if row[0] and row[1]
+                ]
+                
+                return SecurityRedactions(
+                    total=total,
+                    by_rule=by_rule,
+                    by_adapter=by_adapter,
+                    trend=trend
+                )
             
         except Exception as e:
             logger.warning(f"Error getting redaction metrics: {str(e)}")

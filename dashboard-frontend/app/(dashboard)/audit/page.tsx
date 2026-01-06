@@ -11,9 +11,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { TimeRangeSelector } from '@/components/dashboard/time-range-selector';
+import { AuditExportButtons } from '@/components/dashboard/audit-export-buttons';
 import type { TimeRange } from '@/types/api';
-import { Download, Filter } from 'lucide-react';
 
 interface AuditLogsContentProps {
   searchParams: {
@@ -94,29 +93,7 @@ async function AuditLogsContent({ searchParams }: AuditLogsContentProps) {
                 View system audit trail and event logs. Total: {auditLogs.pagination.total}
               </CardDescription>
             </div>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  // Export functionality will be implemented
-                  window.open('/api/audit-logs/export?format=json', '_blank');
-                }}
-              >
-                <Download className="h-4 w-4 mr-2" />
-                Export JSON
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  window.open('/api/audit-logs/export?format=csv', '_blank');
-                }}
-              >
-                <Download className="h-4 w-4 mr-2" />
-                Export CSV
-              </Button>
-            </div>
+            <AuditExportButtons />
           </div>
         </CardHeader>
         <CardContent>

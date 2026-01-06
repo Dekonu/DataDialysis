@@ -16,6 +16,7 @@ from src.dashboard.models.metrics import (
     RedactionSummary,
     CircuitBreakerStatus
 )
+from src.dashboard.services.connection_helper import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -123,35 +124,41 @@ class MetricsAggregator:
                     total_failed=0
                 )
             
-            conn = self.storage._get_connection()
-            
-            # Count records from all tables within time range
-            total_successful = 0
-            
-            for table in ['patients', 'encounters', 'observations']:
-                try:
-                    # Use parameterized query to prevent SQL injection
-                    query = f"""
-                        SELECT COUNT(*) as count
-                        FROM {table}
-                        WHERE ingestion_timestamp >= ? AND ingestion_timestamp <= ?
-                    """
-                    result = conn.execute(query, [start_time, end_time]).fetchone()
-                    if result:
-                        total_successful += result[0] if result[0] else 0
-                except Exception as e:
-                    logger.debug(f"Could not query {table}: {str(e)}")
-                    continue
-            
-            # For failed records, we'd need to track them separately
-            # For now, estimate based on audit log errors
-            total_failed = self._estimate_failed_records(start_time, end_time)
-            
-            return RecordMetrics(
-                total_processed=total_successful + total_failed,
-                total_successful=total_successful,
-                total_failed=total_failed
-            )
+            with get_db_connection(self.storage) as conn:
+                if conn is None:
+                    return RecordMetrics(
+                        total_processed=0,
+                        total_successful=0,
+                        total_failed=0
+                    )
+                
+                # Count records from all tables within time range
+                total_successful = 0
+                
+                for table in ['patients', 'encounters', 'observations']:
+                    try:
+                        # Use parameterized query to prevent SQL injection
+                        query = f"""
+                            SELECT COUNT(*) as count
+                            FROM {table}
+                            WHERE ingestion_timestamp >= ? AND ingestion_timestamp <= ?
+                        """
+                        result = conn.execute(query, [start_time, end_time]).fetchone()
+                        if result:
+                            total_successful += result[0] if result[0] else 0
+                    except Exception as e:
+                        logger.debug(f"Could not query {table}: {str(e)}")
+                        continue
+                
+                # For failed records, we'd need to track them separately
+                # For now, estimate based on audit log errors
+                total_failed = self._estimate_failed_records(start_time, end_time)
+                
+                return RecordMetrics(
+                    total_processed=total_successful + total_failed,
+                    total_successful=total_successful,
+                    total_failed=total_failed
+                )
             
         except Exception as e:
             logger.warning(f"Error getting record metrics: {str(e)}")
@@ -179,17 +186,19 @@ class MetricsAggregator:
             if not hasattr(self.storage, '_get_connection'):
                 return 0
             
-            conn = self.storage._get_connection()
-            
-            # Count validation errors and transformation errors from audit log
-            query = """
-                SELECT COUNT(*) as count
-                FROM audit_log
-                WHERE event_timestamp >= ? AND event_timestamp <= ?
-                AND event_type IN ('VALIDATION_ERROR', 'TRANSFORMATION_ERROR')
-            """
-            result = conn.execute(query, [start_time, end_time]).fetchone()
-            return result[0] if result and result[0] else 0
+            with get_db_connection(self.storage) as conn:
+                if conn is None:
+                    return 0
+                
+                # Count validation errors and transformation errors from audit log
+                query = """
+                    SELECT COUNT(*) as count
+                    FROM audit_log
+                    WHERE event_timestamp >= ? AND event_timestamp <= ?
+                    AND event_type IN ('VALIDATION_ERROR', 'TRANSFORMATION_ERROR')
+                """
+                result = conn.execute(query, [start_time, end_time]).fetchone()
+                return result[0] if result and result[0] else 0
             
         except Exception as e:
             logger.debug(f"Could not estimate failed records: {str(e)}")
@@ -213,72 +222,74 @@ class MetricsAggregator:
             if not hasattr(self.storage, '_get_connection'):
                 return RedactionSummary(total=0)
             
-            conn = self.storage._get_connection()
-            
-            # Query logs table - get total count first
-            total_query = """
-                SELECT COUNT(*) as total
-                FROM logs
-                WHERE timestamp >= ? AND timestamp <= ?
-            """
-            total_result = conn.execute(total_query, [start_time, end_time]).fetchone()
-            total = total_result[0] if total_result and total_result[0] else 0
-            
-            # Query grouped by field
-            field_query = """
-                SELECT field_name, COUNT(*) as count
-                FROM logs
-                WHERE timestamp >= ? AND timestamp <= ?
-                GROUP BY field_name
-            """
-            field_results = conn.execute(field_query, [start_time, end_time]).fetchall()
-            
-            # Query grouped by rule
-            rule_query = """
-                SELECT rule_triggered, COUNT(*) as count
-                FROM logs
-                WHERE timestamp >= ? AND timestamp <= ?
-                GROUP BY rule_triggered
-            """
-            rule_results = conn.execute(rule_query, [start_time, end_time]).fetchall()
-            
-            # Query grouped by adapter
-            adapter_query = """
-                SELECT source_adapter, COUNT(*) as count
-                FROM logs
-                WHERE timestamp >= ? AND timestamp <= ?
-                GROUP BY source_adapter
-            """
-            adapter_results = conn.execute(adapter_query, [start_time, end_time]).fetchall()
-            
-            by_field = {}
-            by_rule = {}
-            by_adapter = {}
-            
-            # Process field results
-            for row in field_results:
-                field = row[0] if row[0] else 'unknown'
-                count = row[1] if row[1] else 0
-                by_field[field] = count
-            
-            # Process rule results
-            for row in rule_results:
-                rule = row[0] if row[0] else 'unknown'
-                count = row[1] if row[1] else 0
-                by_rule[rule] = count
-            
-            # Process adapter results
-            for row in adapter_results:
-                adapter = row[0] if row[0] else 'unknown'
-                count = row[1] if row[1] else 0
-                by_adapter[adapter] = count
-            
-            return RedactionSummary(
-                total=total,
-                by_field=by_field,
-                by_rule=by_rule,
-                by_adapter=by_adapter
-            )
+            with get_db_connection(self.storage) as conn:
+                if conn is None:
+                    return RedactionSummary(total=0)
+                
+                # Query logs table - get total count first
+                total_query = """
+                    SELECT COUNT(*) as total
+                    FROM logs
+                    WHERE timestamp >= ? AND timestamp <= ?
+                """
+                total_result = conn.execute(total_query, [start_time, end_time]).fetchone()
+                total = total_result[0] if total_result and total_result[0] else 0
+                
+                # Query grouped by field
+                field_query = """
+                    SELECT field_name, COUNT(*) as count
+                    FROM logs
+                    WHERE timestamp >= ? AND timestamp <= ?
+                    GROUP BY field_name
+                """
+                field_results = conn.execute(field_query, [start_time, end_time]).fetchall()
+                
+                # Query grouped by rule
+                rule_query = """
+                    SELECT rule_triggered, COUNT(*) as count
+                    FROM logs
+                    WHERE timestamp >= ? AND timestamp <= ?
+                    GROUP BY rule_triggered
+                """
+                rule_results = conn.execute(rule_query, [start_time, end_time]).fetchall()
+                
+                # Query grouped by adapter
+                adapter_query = """
+                    SELECT source_adapter, COUNT(*) as count
+                    FROM logs
+                    WHERE timestamp >= ? AND timestamp <= ?
+                    GROUP BY source_adapter
+                """
+                adapter_results = conn.execute(adapter_query, [start_time, end_time]).fetchall()
+                
+                by_field = {}
+                by_rule = {}
+                by_adapter = {}
+                
+                # Process field results
+                for row in field_results:
+                    field = row[0] if row[0] else 'unknown'
+                    count = row[1] if row[1] else 0
+                    by_field[field] = count
+                
+                # Process rule results
+                for row in rule_results:
+                    rule = row[0] if row[0] else 'unknown'
+                    count = row[1] if row[1] else 0
+                    by_rule[rule] = count
+                
+                # Process adapter results
+                for row in adapter_results:
+                    adapter = row[0] if row[0] else 'unknown'
+                    count = row[1] if row[1] else 0
+                    by_adapter[adapter] = count
+                
+                return RedactionSummary(
+                    total=total,
+                    by_field=by_field,
+                    by_rule=by_rule,
+                    by_adapter=by_adapter
+                )
             
         except Exception as e:
             logger.warning(f"Error getting redaction summary: {str(e)}")
@@ -302,31 +313,33 @@ class MetricsAggregator:
             if not hasattr(self.storage, '_get_connection'):
                 return IngestionMetrics(total=0, successful=0, failed=0, success_rate=0.0)
             
-            conn = self.storage._get_connection()
-            
-            # Count unique ingestion IDs from logs table
-            query = """
-                SELECT COUNT(DISTINCT ingestion_id) as count
-                FROM logs
-                WHERE timestamp >= ? AND timestamp <= ?
-                AND ingestion_id IS NOT NULL
-            """
-            result = conn.execute(query, [start_time, end_time]).fetchone()
-            total = result[0] if result and result[0] else 0
-            
-            # For now, assume all ingestions with logs are successful
-            # Failed ingestions might not have logs
-            successful = total
-            failed = 0
-            
-            success_rate = 1.0 if total > 0 else 0.0
-            
-            return IngestionMetrics(
-                total=total,
-                successful=successful,
-                failed=failed,
-                success_rate=success_rate
-            )
+            with get_db_connection(self.storage) as conn:
+                if conn is None:
+                    return IngestionMetrics(total=0, successful=0, failed=0, success_rate=0.0)
+                
+                # Count unique ingestion IDs from logs table
+                query = """
+                    SELECT COUNT(DISTINCT ingestion_id) as count
+                    FROM logs
+                    WHERE timestamp >= ? AND timestamp <= ?
+                    AND ingestion_id IS NOT NULL
+                """
+                result = conn.execute(query, [start_time, end_time]).fetchone()
+                total = result[0] if result and result[0] else 0
+                
+                # For now, assume all ingestions with logs are successful
+                # Failed ingestions might not have logs
+                successful = total
+                failed = 0
+                
+                success_rate = 1.0 if total > 0 else 0.0
+                
+                return IngestionMetrics(
+                    total=total,
+                    successful=successful,
+                    failed=failed,
+                    success_rate=success_rate
+                )
             
         except Exception as e:
             logger.warning(f"Error getting ingestion metrics: {str(e)}")

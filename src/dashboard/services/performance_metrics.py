@@ -16,6 +16,7 @@ from src.dashboard.models.metrics import (
     FileProcessingMetrics,
     MemoryMetrics
 )
+from src.dashboard.services.connection_helper import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -108,38 +109,40 @@ class PerformanceMetricsService:
             if not hasattr(self.storage, '_get_connection'):
                 return ThroughputMetrics(records_per_second=0.0)
             
-            conn = self.storage._get_connection()
-            
-            # Count total records processed
-            total_records = 0
-            for table in ['patients', 'encounters', 'observations']:
-                try:
-                    query = f"""
-                        SELECT COUNT(*) as count
-                        FROM {table}
-                        WHERE ingestion_timestamp >= ? AND ingestion_timestamp <= ?
-                    """
-                    result = conn.execute(query, [start_time, end_time]).fetchone()
-                    if result and result[0]:
-                        total_records += result[0]
-                except Exception as e:
-                    logger.debug(f"Could not query {table}: {str(e)}")
-                    continue
-            
-            # Calculate time delta in seconds
-            time_delta = (end_time - start_time).total_seconds()
-            if time_delta > 0:
-                records_per_second = total_records / time_delta
-            else:
-                records_per_second = 0.0
-            
-            # For now, we don't track file sizes or peak throughput
-            # These would need additional tracking
-            return ThroughputMetrics(
-                records_per_second=round(records_per_second, 2),
-                mb_per_second=None,
-                peak_records_per_second=None
-            )
+            with get_db_connection(self.storage) as conn:
+                if conn is None:
+                    return ThroughputMetrics(records_per_second=0.0)
+                
+                # Count total records processed
+                total_records = 0
+                for table in ['patients', 'encounters', 'observations']:
+                    try:
+                        query = f"""
+                            SELECT COUNT(*) as count
+                            FROM {table}
+                            WHERE ingestion_timestamp >= ? AND ingestion_timestamp <= ?
+                        """
+                        result = conn.execute(query, [start_time, end_time]).fetchone()
+                        if result and result[0]:
+                            total_records += result[0]
+                    except Exception as e:
+                        logger.debug(f"Could not query {table}: {str(e)}")
+                        continue
+                
+                # Calculate time delta in seconds
+                time_delta = (end_time - start_time).total_seconds()
+                if time_delta > 0:
+                    records_per_second = total_records / time_delta
+                else:
+                    records_per_second = 0.0
+                
+                # For now, we don't track file sizes or peak throughput
+                # These would need additional tracking
+                return ThroughputMetrics(
+                    records_per_second=round(records_per_second, 2),
+                    mb_per_second=None,
+                    peak_records_per_second=None
+                )
             
         except Exception as e:
             logger.warning(f"Error getting throughput metrics: {str(e)}")
@@ -189,24 +192,26 @@ class PerformanceMetricsService:
             if not hasattr(self.storage, '_get_connection'):
                 return FileProcessingMetrics(total_files=0)
             
-            conn = self.storage._get_connection()
-            
-            # Count unique ingestion IDs as proxy for file count
-            query = """
-                SELECT COUNT(DISTINCT ingestion_id) as count
-                FROM logs
-                WHERE timestamp >= ? AND timestamp <= ?
-                AND ingestion_id IS NOT NULL
-            """
-            result = conn.execute(query, [start_time, end_time]).fetchone()
-            total_files = result[0] if result and result[0] else 0
-            
-            # File size metrics would need to be tracked separately
-            return FileProcessingMetrics(
-                total_files=total_files,
-                avg_file_size_mb=None,
-                total_data_processed_mb=None
-            )
+            with get_db_connection(self.storage) as conn:
+                if conn is None:
+                    return FileProcessingMetrics(total_files=0)
+                
+                # Count unique ingestion IDs as proxy for file count
+                query = """
+                    SELECT COUNT(DISTINCT ingestion_id) as count
+                    FROM logs
+                    WHERE timestamp >= ? AND timestamp <= ?
+                    AND ingestion_id IS NOT NULL
+                """
+                result = conn.execute(query, [start_time, end_time]).fetchone()
+                total_files = result[0] if result and result[0] else 0
+                
+                # File size metrics would need to be tracked separately
+                return FileProcessingMetrics(
+                    total_files=total_files,
+                    avg_file_size_mb=None,
+                    total_data_processed_mb=None
+                )
             
         except Exception as e:
             logger.warning(f"Error getting file processing metrics: {str(e)}")
