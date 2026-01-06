@@ -164,6 +164,28 @@ async function DashboardContent({ timeRange }: DashboardContentProps) {
       ? metrics.records.total_successful / metrics.records.total_processed
       : 0;
 
+  // Determine variant based on data availability and success rate
+  const getIngestionVariant = () => {
+    if (metrics.ingestions.total === 0) return 'default'; // No data = neutral
+    if (successRate >= 0.95) return 'success';
+    if (successRate >= 0.8) return 'warning';
+    return 'destructive';
+  };
+
+  const getRecordVariant = () => {
+    if (metrics.records.total_processed === 0) return 'default'; // No data = neutral
+    if (recordSuccessRate >= 0.95) return 'success';
+    if (recordSuccessRate >= 0.8) return 'warning';
+    return 'destructive';
+  };
+
+  const getCircuitBreakerVariant = () => {
+    if (!metrics.circuit_breaker || !metrics.circuit_breaker.status) return 'default'; // Unknown = neutral
+    if (metrics.circuit_breaker.status === 'closed') return 'success';
+    if (metrics.circuit_breaker.status === 'half_open') return 'warning';
+    return 'destructive';
+  };
+
   return (
     <div className="space-y-6">
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -171,9 +193,9 @@ async function DashboardContent({ timeRange }: DashboardContentProps) {
           title="Total Ingestions"
           value={metrics.ingestions.total}
           description={`${metrics.ingestions.successful} successful, ${metrics.ingestions.failed} failed`}
-          trend={successRate}
+          trend={metrics.ingestions.total > 0 ? successRate : null}
           trendLabel="success rate"
-          variant={successRate >= 0.95 ? 'success' : successRate >= 0.8 ? 'warning' : 'destructive'}
+          variant={getIngestionVariant()}
           formatType="number"
         />
 
@@ -181,11 +203,9 @@ async function DashboardContent({ timeRange }: DashboardContentProps) {
           title="Records Processed"
           value={metrics.records.total_processed}
           description={`${metrics.records.total_successful} successful, ${metrics.records.total_failed} failed`}
-          trend={recordSuccessRate}
+          trend={metrics.records.total_processed > 0 ? recordSuccessRate : null}
           trendLabel="success rate"
-          variant={
-            recordSuccessRate >= 0.95 ? 'success' : recordSuccessRate >= 0.8 ? 'warning' : 'destructive'
-          }
+          variant={getRecordVariant()}
           formatType="number"
         />
 
@@ -206,13 +226,7 @@ async function DashboardContent({ timeRange }: DashboardContentProps) {
               ? `${(metrics.circuit_breaker.failure_rate * 100).toFixed(1)}% failure rate`
               : 'Status unknown'
           }
-          variant={
-            metrics.circuit_breaker?.status === 'closed'
-              ? 'success'
-              : metrics.circuit_breaker?.status === 'half_open'
-              ? 'warning'
-              : 'destructive'
-          }
+          variant={getCircuitBreakerVariant()}
           formatType="plain"
         />
       </div>

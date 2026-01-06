@@ -27,13 +27,55 @@ async def check_database_health(storage: StoragePort) -> DatabaseHealth:
     Security Impact:
         - Only checks connectivity, no sensitive data exposed
     """
-    db_type = storage.db_config.db_type if hasattr(storage, 'db_config') else "unknown"
+    # Determine database type
+    db_type = "unknown"
+    if hasattr(storage, 'db_config') and storage.db_config:
+        db_type = storage.db_config.db_type
+    elif hasattr(storage, 'connection_params') and isinstance(getattr(storage, 'connection_params', None), dict):
+        # PostgreSQL adapter stores connection_params
+        if 'host' in storage.connection_params or 'dsn' in storage.connection_params:
+            db_type = "postgresql"
+    elif hasattr(storage, 'db_path'):
+        # DuckDB adapter
+        db_type = "duckdb"
     
     try:
-        # Try a simple query to check connectivity
         start_time = time.time()
         
-        # Use query method if available, otherwise just check connection
+        # For PostgreSQL adapter, test connection pool directly
+        if db_type == "postgresql" and hasattr(storage, '_get_connection'):
+            try:
+                # Try to get a connection from the pool
+                conn = storage._get_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+                cursor.close()
+                
+                # Return connection to pool
+                if hasattr(storage, '_return_connection'):
+                    storage._return_connection(conn)
+                
+                response_time = (time.time() - start_time) * 1000  # Convert to ms
+                logger.debug(f"PostgreSQL health check successful: {response_time:.2f}ms")
+                return DatabaseHealth(
+                    status="connected",
+                    type=db_type,
+                    response_time_ms=round(response_time, 2)
+                )
+            except Exception as e:
+                error_msg = str(e)
+                logger.warning(
+                    f"PostgreSQL connection test failed: {error_msg}",
+                    exc_info=True
+                )
+                return DatabaseHealth(
+                    status="disconnected",
+                    type=db_type,
+                    response_time_ms=None
+                )
+        
+        # For DuckDB adapter, use query method if available
         if hasattr(storage, 'query'):
             result = storage.query("SELECT 1")
             if result.is_success():
@@ -44,7 +86,6 @@ async def check_database_health(storage: StoragePort) -> DatabaseHealth:
                     response_time_ms=round(response_time, 2)
                 )
             else:
-                # Query failed - database is disconnected
                 logger.warning(f"Database query failed: {result.error}")
                 return DatabaseHealth(
                     status="disconnected",
@@ -52,13 +93,28 @@ async def check_database_health(storage: StoragePort) -> DatabaseHealth:
                     response_time_ms=None
                 )
         
-        # Fallback: just check if storage is initialized
+        # Fallback: check if storage is initialized
         if hasattr(storage, '_initialized') and storage._initialized:
             return DatabaseHealth(
                 status="connected",
                 type=db_type,
                 response_time_ms=None
             )
+        
+        # Last resort: try to get connection to test
+        if hasattr(storage, '_get_connection'):
+            try:
+                conn = storage._get_connection()
+                if conn:
+                    if hasattr(storage, '_return_connection'):
+                        storage._return_connection(conn)
+                    return DatabaseHealth(
+                        status="connected",
+                        type=db_type,
+                        response_time_ms=None
+                    )
+            except Exception as e:
+                logger.warning(f"Connection test failed: {str(e)}")
         
         return DatabaseHealth(
             status="disconnected",
@@ -67,7 +123,7 @@ async def check_database_health(storage: StoragePort) -> DatabaseHealth:
         )
         
     except Exception as e:
-        logger.warning(f"Database health check failed: {str(e)}")
+        logger.warning(f"Database health check failed: {str(e)}", exc_info=True)
         return DatabaseHealth(
             status="disconnected",
             type=db_type,
