@@ -694,12 +694,13 @@ class PostgresAdapter(StoragePort):
                 record_id=patient.patient_id,
                 transformation_hash=record.transformation_hash,
                 details={
-                    "source_adapter": record.source_adapter,
                     "encounter_count": len(record.encounters),
                     "observation_count": len(record.observations),
                 },
                 table_name="patients",  # Main table for GoldenRecord
-                row_count=None  # Singular record, not bulk
+                row_count=None,  # Singular record, not bulk
+                source_adapter=record.source_adapter
+                source_adapter=record.source_adapter
             )
             
             logger.info(f"Persisted GoldenRecord for patient_id: {patient.patient_id}")
@@ -770,22 +771,30 @@ class PostgresAdapter(StoragePort):
             if records and records[0].source_adapter:
                 source_adapter = records[0].source_adapter
             
-            # Count total rows across all tables (patients + encounters + observations)
-            total_rows = len(records)  # Each record has 1 patient
+            # Count rows per table
+            patients_count = len(records)  # Each record has 1 patient
+            encounters_count = 0
+            observations_count = 0
             for record in records:
-                total_rows += len(record.encounters) + len(record.observations)
+                encounters_count += len(record.encounters)
+                observations_count += len(record.observations)
             
-            # Log bulk audit event
+            total_rows = patients_count + encounters_count + observations_count
+            
+            # Log bulk audit event with table breakdown
             self.log_audit_event(
                 event_type="BULK_PERSISTENCE",
                 record_id=None,
                 transformation_hash=None,
                 details={
-                    "source_adapter": source_adapter,
                     "record_count": len(records),
+                    "patients": patients_count,
+                    "encounters": encounters_count,
+                    "observations": observations_count,
                 },
-                table_name="patients",  # Primary table, but includes encounters/observations
-                row_count=total_rows
+                table_name="patients",  # Primary table (entity)
+                row_count=total_rows,
+                source_adapter=source_adapter
             )
             
             return Result.success_result(record_ids)
@@ -1093,7 +1102,8 @@ class PostgresAdapter(StoragePort):
         transformation_hash: Optional[str],
         details: Optional[dict] = None,
         table_name: Optional[str] = None,
-        row_count: Optional[int] = None
+        row_count: Optional[int] = None,
+        source_adapter: Optional[str] = None
     ) -> Result[str]:
         """Log an audit trail event for compliance and observability.
         

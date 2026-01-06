@@ -314,7 +314,7 @@ class AuditService:
                 
                 summary_result = conn.execute(summary_query, summary_params).fetchall()
                 summary_stats = {
-                    "total_redactions": total,
+                    "total": total,
                     "by_field": {},
                     "by_rule": {},
                     "by_adapter": {}
@@ -348,13 +348,13 @@ class AuditService:
             
             # Convert to RedactionLogEntry objects
             logs = []
+            columns = [
+                "log_id", "field_name", "original_hash", "timestamp",
+                "rule_triggered", "record_id", "source_adapter",
+                "ingestion_id", "redacted_value", "original_value_length"
+            ]
+            
             if result:
-                columns = [
-                    "log_id", "field_name", "original_hash", "timestamp",
-                    "rule_triggered", "record_id", "source_adapter",
-                    "ingestion_id", "redacted_value", "original_value_length"
-                ]
-                
                 for row in result:
                     if isinstance(row, (list, tuple)):
                         row_dict = dict(zip(columns, row))
@@ -373,21 +373,21 @@ class AuditService:
                         redacted_value=row_dict.get("redacted_value"),
                         original_value_length=row_dict.get("original_value_length")
                     ))
-                
-                # Build pagination metadata
-                pagination = PaginationMeta(
-                    total=total,
-                    limit=limit,
-                    offset=offset,
-                    has_next=(offset + limit) < total,
-                    has_previous=offset > 0
-                )
-                
-                return Result.success_result(RedactionLogsResponse(
-                    logs=logs,
-                    pagination=pagination,
-                    summary=summary_stats
-                ))
+            
+            # Build pagination metadata
+            pagination = PaginationMeta(
+                total=total,
+                limit=limit,
+                offset=offset,
+                has_next=(offset + limit) < total,
+                has_previous=offset > 0
+            )
+            
+            return Result.success_result(RedactionLogsResponse(
+                logs=logs,
+                pagination=pagination,
+                summary=summary_stats
+            ))
             
         except Exception as e:
             error_msg = f"Failed to get redaction logs: {str(e)}"

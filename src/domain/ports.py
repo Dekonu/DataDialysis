@@ -576,7 +576,8 @@ class StoragePort(ABC):
         transformation_hash: Optional[str],
         details: Optional[dict] = None,
         table_name: Optional[str] = None,
-        row_count: Optional[int] = None
+        row_count: Optional[int] = None,
+        source_adapter: Optional[str] = None
     ) -> Result[str]:
         """Log an audit trail event for compliance and observability.
         
@@ -590,6 +591,7 @@ class StoragePort(ABC):
             details: Additional event metadata (source, adapter, field_changes, etc.)
             table_name: Name of the table affected (for persistence events)
             row_count: Number of rows processed (None/NULL for singular records, integer for bulk operations)
+            source_adapter: Source adapter identifier (e.g., 'xml_ingester', 'csv_ingester')
         
         Returns:
             Result[str]: Result object containing either:

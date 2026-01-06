@@ -18,7 +18,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { Badge } from '@/components/ui/badge';
 import type { TimeRange } from '@/types/api';
 
 interface AuditLogsContentProps {
@@ -173,11 +172,32 @@ async function AuditLogsContent({ searchParams }: AuditLogsContentProps) {
                                   </Badge>
                                 </TooltipTrigger>
                                 {hasRowCount && (
-                                  <TooltipContent>
-                                    <p className="text-sm">
-                                      <span className="font-semibold">Rows:</span>{' '}
-                                      {log.row_count!.toLocaleString()}
-                                    </p>
+                                  <TooltipContent className="max-w-xs">
+                                    <div className="space-y-1 text-sm">
+                                      <p className="font-semibold">Total Rows: {log.row_count!.toLocaleString()}</p>
+                                      {log.details && typeof log.details === 'object' && (
+                                        <div className="pt-1 border-t border-border">
+                                          {(log.details as Record<string, unknown>).patients !== undefined && (
+                                            <p>
+                                              <span className="font-medium">Patients:</span>{' '}
+                                              {Number((log.details as Record<string, unknown>).patients).toLocaleString()}
+                                            </p>
+                                          )}
+                                          {(log.details as Record<string, unknown>).encounters !== undefined && (
+                                            <p>
+                                              <span className="font-medium">Encounters:</span>{' '}
+                                              {Number((log.details as Record<string, unknown>).encounters).toLocaleString()}
+                                            </p>
+                                          )}
+                                          {(log.details as Record<string, unknown>).observations !== undefined && (
+                                            <p>
+                                              <span className="font-medium">Observations:</span>{' '}
+                                              {Number((log.details as Record<string, unknown>).observations).toLocaleString()}
+                                            </p>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
                                   </TooltipContent>
                                 )}
                               </Tooltip>
