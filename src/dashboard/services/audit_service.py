@@ -90,12 +90,13 @@ class AuditService:
                 params.append(source_adapter)
             
             # Validate sort_by to prevent SQL injection
-            allowed_sort_fields = [
+            # Use a set to ensure we only use predefined, safe column names
+            allowed_sort_fields = {
                 "event_timestamp", "event_type", "severity", 
                 "source_adapter", "record_id"
-            ]
-            if sort_by not in allowed_sort_fields:
-                sort_by = "event_timestamp"
+            }
+            # Only use the sort_by value if it's in the allowed set, otherwise use default
+            safe_sort_by = sort_by if sort_by in allowed_sort_fields else "event_timestamp"
             
             # Validate sort_order
             sort_order = sort_order.upper()
@@ -117,7 +118,8 @@ class AuditService:
             total = count_result[0] if count_result else 0
             
             # Add sorting and pagination
-            query += f" ORDER BY {sort_by} {sort_order}"
+            # Use validated column name from allowlist
+            query += f" ORDER BY {safe_sort_by} {sort_order}"
             query += " LIMIT ? OFFSET ?"
             params.extend([limit, offset])
             
@@ -246,12 +248,13 @@ class AuditService:
                 params.append(ingestion_id)
             
             # Validate sort_by
-            allowed_sort_fields = [
+            # Use a set to ensure we only use predefined, safe column names
+            allowed_sort_fields = {
                 "timestamp", "field_name", "rule_triggered",
                 "source_adapter", "record_id"
-            ]
-            if sort_by not in allowed_sort_fields:
-                sort_by = "timestamp"
+            }
+            # Only use the sort_by value if it's in the allowed set, otherwise use default
+            safe_sort_by = sort_by if sort_by in allowed_sort_fields else "timestamp"
             
             # Validate sort_order
             sort_order = sort_order.upper()
@@ -316,7 +319,8 @@ class AuditService:
                         summary_stats["by_adapter"][adapter] = summary_stats["by_adapter"].get(adapter, 0) + count
             
             # Add sorting and pagination
-            query += f" ORDER BY {sort_by} {sort_order}"
+            # Use validated column name from allowlist
+            query += f" ORDER BY {safe_sort_by} {sort_order}"
             query += " LIMIT ? OFFSET ?"
             params.extend([limit, offset])
             
