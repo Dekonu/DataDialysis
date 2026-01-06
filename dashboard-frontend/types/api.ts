@@ -23,17 +23,15 @@ export interface RedactionSummary {
   by_adapter?: Record<string, number> | null;
 }
 
-export interface CircuitBreakerStatus {
-  status: 'closed' | 'open' | 'half_open';
-  failure_rate?: number | null;
-}
-
 export interface OverviewMetrics {
   time_range: string;
   ingestions: IngestionMetrics;
   records: RecordMetrics;
   redactions: RedactionSummary;
-  circuit_breaker?: CircuitBreakerStatus | null;
+  circuit_breaker?: {
+    status: 'closed' | 'open' | 'half_open';
+    failure_rate?: number | null;
+  } | null;
 }
 
 export interface RedactionTrendPoint {
@@ -93,4 +91,66 @@ export interface PerformanceMetrics {
 }
 
 export type TimeRange = '1h' | '24h' | '7d' | '30d';
+
+// Audit Log Types
+export interface AuditLogEntry {
+  audit_id: string;
+  event_type: string;
+  event_timestamp: string; // ISO datetime string
+  record_id?: string | null;
+  transformation_hash?: string | null;
+  details?: Record<string, unknown> | null;
+  source_adapter?: string | null;
+  severity?: string | null;
+}
+
+export interface PaginationMeta {
+  total: number;
+  limit: number;
+  offset: number;
+  has_next: boolean;
+  has_previous: boolean;
+}
+
+export interface AuditLogsResponse {
+  logs: AuditLogEntry[];
+  pagination: PaginationMeta;
+}
+
+export interface RedactionLogEntry {
+  log_id: string;
+  field_name: string;
+  original_hash: string;
+  timestamp: string; // ISO datetime string
+  rule_triggered: string;
+  record_id?: string | null;
+  source_adapter?: string | null;
+  ingestion_id?: string | null;
+  redacted_value?: string | null;
+  original_value_length?: number | null;
+}
+
+export interface RedactionLogsResponse {
+  logs: RedactionLogEntry[];
+  pagination: PaginationMeta;
+  summary: {
+    total: number;
+    by_field: Record<string, number>;
+    by_rule: Record<string, number>;
+    by_adapter: Record<string, number>;
+  };
+}
+
+// Circuit Breaker Types
+export interface CircuitBreakerStatus {
+  is_open: boolean;
+  failure_rate: number;
+  threshold: number;
+  total_processed: number;
+  total_failures: number;
+  window_size: number;
+  failures_in_window: number;
+  records_in_window: number;
+  min_records_before_check: number;
+}
 

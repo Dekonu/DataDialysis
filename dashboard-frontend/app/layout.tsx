@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
+import { Navigation } from '@/components/dashboard/navigation';
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -20,7 +21,10 @@ export default function RootLayout({
         <div className="min-h-screen bg-background">
           <nav className="border-b">
             <div className="container mx-auto px-4 py-4">
-              <h1 className="text-2xl font-bold">Data-Dialysis Dashboard</h1>
+              <div className="flex items-center justify-between">
+                <h1 className="text-2xl font-bold">Data-Dialysis Dashboard</h1>
+                <Navigation />
+              </div>
             </div>
           </nav>
           <main className="container mx-auto px-4 py-8">
