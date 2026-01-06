@@ -1170,6 +1170,14 @@ class PostgreSQLAdapter(StoragePort):
             
             logger.info(f"Persisted {total_rows} rows to table '{table_name}'")
             
+            # Extract source_adapter from dataframe if available
+            source_adapter = 'bulk_ingestion'
+            if 'source_adapter' in df.columns:
+                # Get first non-null value, or use default
+                source_adapter_series = df['source_adapter'].dropna()
+                if len(source_adapter_series) > 0:
+                    source_adapter = str(source_adapter_series.iloc[0])
+            
             # Log audit event
             self.log_audit_event(
                 event_type="BULK_PERSISTENCE",
@@ -1178,6 +1186,7 @@ class PostgreSQLAdapter(StoragePort):
                 details={
                     "table_name": table_name,
                     "row_count": total_rows,
+                    "source_adapter": source_adapter,
                 }
             )
             

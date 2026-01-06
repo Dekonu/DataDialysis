@@ -12,6 +12,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { AuditExportButtons } from '@/components/dashboard/audit-export-buttons';
+import { AuditDetailsCell } from '@/components/dashboard/audit-details-cell';
 import type { TimeRange } from '@/types/api';
 
 interface AuditLogsContentProps {
@@ -132,30 +133,24 @@ async function AuditLogsContent({ searchParams }: AuditLogsContentProps) {
                       </TableCell>
                       <TableCell>
                         {(() => {
-                          // Try to get source_adapter from the log entry
-                          const source = log.source_adapter;
+                          // Try to get source_adapter from the log entry first
+                          let source = log.source_adapter;
                           
                           // If not available, try to extract from details
-                          if (!source && log.details) {
-                            const detailsSource = 
-                              (log.details as Record<string, unknown>)?.source_adapter ||
-                              (log.details as Record<string, unknown>)?.source ||
-                              (log.details as Record<string, unknown>)?.adapter;
-                            
-                            if (detailsSource && typeof detailsSource === 'string') {
-                              return (
-                                <Badge variant="outline" className="font-normal">
-                                  {detailsSource}
-                                </Badge>
-                              );
-                            }
+                          if ((!source || !source.trim()) && log.details) {
+                            const details = log.details as Record<string, unknown>;
+                            source = 
+                              (details?.source_adapter as string) ||
+                              (details?.source as string) ||
+                              (details?.adapter as string) ||
+                              null;
                           }
                           
                           // Display source_adapter if available
-                          if (source && source.trim()) {
+                          if (source && typeof source === 'string' && source.trim()) {
                             return (
                               <Badge variant="outline" className="font-normal">
-                                {source}
+                                {source.trim()}
                               </Badge>
                             );
                           }
@@ -167,12 +162,8 @@ async function AuditLogsContent({ searchParams }: AuditLogsContentProps) {
                       <TableCell className="font-mono text-xs">
                         {log.record_id || 'N/A'}
                       </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {log.details
-                          ? Object.keys(log.details).length > 0
-                            ? `${Object.keys(log.details).length} fields`
-                            : 'None'
-                          : 'None'}
+                      <TableCell>
+                        <AuditDetailsCell details={log.details} />
                       </TableCell>
                     </TableRow>
                   ))}
