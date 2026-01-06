@@ -562,7 +562,7 @@ class TestResponseFormat:
                 assert "application/json" in response.headers.get("content-type", ""), f"Endpoint {endpoint} is not JSON"
                 # Should be parseable
                 data = response.json()
+                assert isinstance(data, dict), f"Endpoint {endpoint} response is not a dictionary"
         finally:
             app.dependency_overrides.clear()
-            assert isinstance(data, dict)
 
