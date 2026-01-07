@@ -120,6 +120,9 @@ class CSVIngester(IngestionPort):
         self.adaptive_chunking_enabled = target_total_rows > 0
         self.chunk_size_adjusted = False  # Track if we've adjusted chunk size
         
+        # CSV type detection (set during ingestion)
+        self._detected_csv_type = 'patients'  # Default
+        
         # Initialize pandarallel if needed (one-time setup)
         initialize_pandarallel_if_needed(progress_bar=False)
     
@@ -227,12 +230,16 @@ class CSVIngester(IngestionPort):
                 low_memory=False
             )
             
+            # Detect CSV type (patients, encounters, observations)
+            csv_type = self._detect_csv_type(first_chunk.columns.tolist())
+            logger.info(f"Detected CSV type: {csv_type} for {source}")
+            
             # Determine column mapping
             column_mapping = self.column_mapping.copy() if self.column_mapping else {}
             if self.has_header:
                 if not column_mapping:
-                    # Auto-detect from headers
-                    column_mapping = self._auto_detect_column_mapping(first_chunk.columns.tolist())
+                    # Auto-detect from headers using detected CSV type
+                    column_mapping = self._auto_detect_column_mapping(first_chunk.columns.tolist(), csv_type)
                 else:
                     # Normalize column names (case-insensitive, strip whitespace)
                     header_map = {col.strip().lower(): col for col in first_chunk.columns}
@@ -251,6 +258,9 @@ class CSVIngester(IngestionPort):
                         source=source,
                         adapter=self.adapter_name
                     )
+            
+            # Store CSV type for use in validation
+            self._detected_csv_type = csv_type
             
             # Process CSV in chunks using pandas
             chunk_count = 0
@@ -282,7 +292,8 @@ class CSVIngester(IngestionPort):
                     validated_df, failed_indices = self._validate_dataframe_chunk(
                         redacted_df,
                         source,
-                        chunk_count
+                        chunk_count,
+                        csv_type=self._detected_csv_type
                     )
                     
                     # Track failures
@@ -395,7 +406,39 @@ class CSVIngester(IngestionPort):
                 source=source
             )
     
-    def _auto_detect_column_mapping(self, headers: List[str]) -> Dict[str, str]:
+    def _detect_csv_type(self, headers: List[str]) -> str:
+        """Detect CSV type based on headers.
+        
+        Parameters:
+            headers: List of CSV column names from header row
+        
+        Returns:
+            str: 'patients', 'encounters', 'observations', or 'unknown'
+        """
+        normalized_headers = [h.lower().strip() for h in headers]
+        
+        # Check for specific IDs first (most reliable indicator)
+        if 'observation_id' in normalized_headers:
+            return 'observations'
+        elif 'encounter_id' in normalized_headers:
+            return 'encounters'
+        elif 'patient_id' in normalized_headers or 'mrn' in normalized_headers:
+            # Check if it has patient fields (not just patient_id)
+            patient_fields = ['first_name', 'last_name', 'firstname', 'lastname', 'fname', 'lname']
+            if any(field in normalized_headers for field in patient_fields):
+                return 'patients'
+            # If only patient_id, could be encounters or observations referencing patient
+            # Check for encounter or observation fields
+            if 'encounter_id' in normalized_headers or 'class_code' in normalized_headers:
+                return 'encounters'
+            elif 'observation_id' in normalized_headers or 'category' in normalized_headers:
+                return 'observations'
+            # Default to patients if only patient_id
+            return 'patients'
+        
+        return 'unknown'
+    
+    def _auto_detect_column_mapping(self, headers: List[str], csv_type: str = 'patients') -> Dict[str, str]:
         """Auto-detect column mapping from CSV headers.
         
         This method attempts to match CSV column names to domain model fields
@@ -403,27 +446,56 @@ class CSVIngester(IngestionPort):
         
         Parameters:
             headers: List of CSV column names from header row
+            csv_type: Type of CSV ('patients', 'encounters', 'observations')
         
         Returns:
             dict: Mapping from domain model fields to CSV column names
         """
         mapping = {}
         
-        # Common field name variations
-        field_variations = {
-            'patient_id': ['patient_id', 'patientid', 'mrn', 'medical_record_number', 'id', 'record_id'],
-            'first_name': ['first_name', 'firstname', 'fname', 'given_name', 'givenname'],
-            'last_name': ['last_name', 'lastname', 'lname', 'family_name', 'familyname', 'surname'],
-            'date_of_birth': ['date_of_birth', 'dateofbirth', 'dob', 'birth_date', 'birthdate'],
-            'gender': ['gender', 'sex'],
-            'ssn': ['ssn', 'social_security_number', 'socialsecuritynumber'],
-            'phone': ['phone', 'phone_number', 'phonenumber', 'telephone', 'tel'],
-            'email': ['email', 'email_address', 'emailaddress'],
-            'address_line1': ['address', 'address_line1', 'addressline1', 'street', 'street_address'],
-            'city': ['city'],
-            'state': ['state', 'state_code', 'statecode'],
-            'postal_code': ['postal_code', 'postalcode', 'zip', 'zip_code', 'zipcode'],
-        }
+        # Common field name variations by type
+        if csv_type == 'patients':
+            field_variations = {
+                'patient_id': ['patient_id', 'patientid', 'mrn', 'medical_record_number', 'id', 'record_id'],
+                'first_name': ['first_name', 'firstname', 'fname', 'given_name', 'givenname'],
+                'last_name': ['last_name', 'lastname', 'lname', 'family_name', 'familyname', 'surname'],
+                'date_of_birth': ['date_of_birth', 'dateofbirth', 'dob', 'birth_date', 'birthdate'],
+                'gender': ['gender', 'sex'],
+                'ssn': ['ssn', 'social_security_number', 'socialsecuritynumber'],
+                'phone': ['phone', 'phone_number', 'phonenumber', 'telephone', 'tel'],
+                'email': ['email', 'email_address', 'emailaddress'],
+                'address_line1': ['address', 'address_line1', 'addressline1', 'street', 'street_address'],
+                'city': ['city'],
+                'state': ['state', 'state_code', 'statecode'],
+                'postal_code': ['postal_code', 'postalcode', 'zip', 'zip_code', 'zipcode'],
+            }
+        elif csv_type == 'encounters':
+            field_variations = {
+                'encounter_id': ['encounter_id', 'encounterid', 'enc_id'],
+                'patient_id': ['patient_id', 'patientid', 'mrn', 'medical_record_number'],
+                'class_code': ['class_code', 'classcode', 'class', 'encounter_class'],
+                'status': ['status', 'encounter_status'],
+                'period_start': ['period_start', 'start', 'start_date', 'startdate', 'admission_date'],
+                'period_end': ['period_end', 'end', 'end_date', 'enddate', 'discharge_date'],
+                'diagnosis_codes': ['diagnosis_codes', 'diagnosiscodes', 'diagnosis', 'icd_codes', 'icd10'],
+            }
+        elif csv_type == 'observations':
+            field_variations = {
+                'observation_id': ['observation_id', 'observationid', 'obs_id'],
+                'patient_id': ['patient_id', 'patientid', 'mrn', 'medical_record_number'],
+                'category': ['category', 'observation_category'],
+                'code': ['code', 'observation_code', 'loinc_code', 'loinc'],
+                'value': ['value', 'result_value', 'numeric_value'],
+                'unit': ['unit', 'result_unit', 'measurement_unit'],
+                'effective_date': ['effective_date', 'effectivedate', 'observation_date', 'result_date'],
+                'status': ['status', 'observation_status'],
+                'notes': ['notes', 'note', 'comment', 'interpretation'],
+            }
+        else:
+            # Default to patient fields
+            field_variations = {
+                'patient_id': ['patient_id', 'patientid', 'mrn', 'medical_record_number', 'id', 'record_id'],
+            }
         
         # Normalize headers (lowercase, strip)
         normalized_headers = {h.lower().strip(): h for h in headers}
@@ -513,10 +585,16 @@ class CSVIngester(IngestionPort):
                 
                 # Log each redaction
                 for idx in original_series[redacted_mask].index:
-                    original_value = str(original_series.iloc[idx])
+                    # Use .loc instead of .iloc since idx is a DataFrame index label, not positional
+                    original_value = str(original_series.loc[idx])
                     # Get record_id from DataFrame if available
+                    # Try encounter_id, observation_id, or patient_id
                     record_id = None
-                    if 'patient_id' in df_redacted.columns and idx in df_redacted.index:
+                    if 'encounter_id' in df_redacted.columns and idx in df_redacted.index:
+                        record_id = str(df_redacted.loc[idx, 'encounter_id'])
+                    elif 'observation_id' in df_redacted.columns and idx in df_redacted.index:
+                        record_id = str(df_redacted.loc[idx, 'observation_id'])
+                    elif 'patient_id' in df_redacted.columns and idx in df_redacted.index:
                         record_id = str(df_redacted.loc[idx, 'patient_id'])
                     
                     logger.log_redaction(
@@ -572,7 +650,8 @@ class CSVIngester(IngestionPort):
         self,
         df: pd.DataFrame,
         source: str,
-        chunk_number: int
+        chunk_number: int,
+        csv_type: str = 'patients'
     ) -> tuple[pd.DataFrame, List[int]]:
         """Validate DataFrame chunk and return valid records + failed indices.
         
@@ -580,6 +659,7 @@ class CSVIngester(IngestionPort):
             df: DataFrame with redacted data
             source: Source identifier
             chunk_number: Chunk number for logging
+            csv_type: Type of CSV ('patients', 'encounters', 'observations')
         
         Returns:
             Tuple of (validated DataFrame, list of failed row indices)
@@ -597,22 +677,39 @@ class CSVIngester(IngestionPort):
                 if 'postal_code' in row_dict and pd.notna(row_dict.get('postal_code')):
                     row_dict['postal_code'] = str(row_dict['postal_code'])
                 
-                # Check for required patient_id
-                if 'patient_id' not in row_dict or pd.isna(row_dict.get('patient_id')) or not row_dict.get('patient_id'):
-                    failed_indices.append(idx)
-                    continue
+                # Handle diagnosis_codes (convert comma-separated string to list)
+                if 'diagnosis_codes' in row_dict and pd.notna(row_dict.get('diagnosis_codes')):
+                    if isinstance(row_dict['diagnosis_codes'], str):
+                        # Split comma-separated values and strip whitespace
+                        row_dict['diagnosis_codes'] = [code.strip() for code in row_dict['diagnosis_codes'].split(',') if code.strip()]
+                
+                # Check for required IDs based on CSV type
+                if csv_type == 'encounters':
+                    if 'encounter_id' not in row_dict or pd.isna(row_dict.get('encounter_id')) or not row_dict.get('encounter_id'):
+                        failed_indices.append(idx)
+                        continue
+                    record_id = row_dict.get('encounter_id')
+                elif csv_type == 'observations':
+                    if 'observation_id' not in row_dict or pd.isna(row_dict.get('observation_id')) or not row_dict.get('observation_id'):
+                        failed_indices.append(idx)
+                        continue
+                    record_id = row_dict.get('observation_id')
+                else:  # patients
+                    if 'patient_id' not in row_dict or pd.isna(row_dict.get('patient_id')) or not row_dict.get('patient_id'):
+                        failed_indices.append(idx)
+                        continue
+                    record_id = row_dict.get('patient_id')
                 
                 # Set record_id in context for this row (if available)
                 # This allows validators to log redactions with the correct record_id
-                patient_id = row_dict.get('patient_id')
                 try:
                     from src.infrastructure.redaction_context import set_redaction_context, get_redaction_context
                     context = get_redaction_context()
-                    if context and patient_id:
+                    if context and record_id:
                         # Update context with this record's ID
                         set_redaction_context(
                             logger=context.get('logger'),
-                            record_id=str(patient_id),
+                            record_id=str(record_id),
                             source_adapter=context.get('source_adapter'),
                             ingestion_id=context.get('ingestion_id')
                         )
@@ -624,25 +721,27 @@ class CSVIngester(IngestionPort):
                     logger.debug(f"Could not set redaction context: {e}")
                     pass  # Context not available - skip (e.g., in tests)
                 
-                # Create PatientRecord (validates and applies additional redaction via validators)
-                patient = PatientRecord(**{k: v for k, v in row_dict.items() if k in PatientRecord.model_fields})
-                
-                # Create minimal GoldenRecord (encounters/observations empty for CSV)
-                golden_record = GoldenRecord(
-                    patient=patient,
-                    encounters=[],
-                    observations=[],
-                    source_adapter=self.adapter_name,
-                    transformation_hash=self._generate_hash_from_row(row_dict)
-                )
-                
-                # Store validated record as dict for DataFrame reconstruction
-                # Include all fields from the validated patient record
-                patient_dict = patient.model_dump(exclude_none=False)
-                # Add GoldenRecord-level fields that are needed for database persistence
-                patient_dict['source_adapter'] = golden_record.source_adapter
-                patient_dict['transformation_hash'] = golden_record.transformation_hash
-                valid_records.append(patient_dict)
+                # Validate based on CSV type
+                if csv_type == 'encounters':
+                    # Create EncounterRecord
+                    encounter = EncounterRecord(**{k: v for k, v in row_dict.items() if k in EncounterRecord.model_fields})
+                    # Store validated record as dict for DataFrame reconstruction
+                    encounter_dict = encounter.model_dump(exclude_none=False)
+                    valid_records.append(encounter_dict)
+                elif csv_type == 'observations':
+                    # Create ClinicalObservation
+                    observation = ClinicalObservation(**{k: v for k, v in row_dict.items() if k in ClinicalObservation.model_fields})
+                    # Store validated record as dict for DataFrame reconstruction
+                    observation_dict = observation.model_dump(exclude_none=False)
+                    valid_records.append(observation_dict)
+                else:  # patients
+                    # Create PatientRecord
+                    patient = PatientRecord(**{k: v for k, v in row_dict.items() if k in PatientRecord.model_fields})
+                    # Store validated record as dict for DataFrame reconstruction
+                    patient_dict = patient.model_dump(exclude_none=False)
+                    # Add source_adapter for database persistence
+                    patient_dict['source_adapter'] = self.adapter_name
+                    valid_records.append(patient_dict)
                 
             except (PydanticValidationError, ValidationError, TransformationError) as e:
                 failed_indices.append(idx)
