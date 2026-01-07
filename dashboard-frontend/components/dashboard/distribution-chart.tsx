@@ -59,7 +59,7 @@ export function DistributionChart({
                 cx="50%"
                 cy="50%"
                 labelLine={false}
-                label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                label={({ name, percent }) => `${name}: ${((percent ?? 0) * 100).toFixed(0)}%`}
                 outerRadius={80}
                 fill="#8884d8"
                 dataKey="value"
@@ -68,7 +68,7 @@ export function DistributionChart({
                   <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                 ))}
               </Pie>
-              <Tooltip formatter={(value: number) => formatValue(value)} />
+              <Tooltip formatter={(value: number | undefined) => formatValue(value ?? 0)} />
               <Legend />
             </PieChart>
           </ResponsiveContainer>
@@ -89,7 +89,7 @@ export function DistributionChart({
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="name" style={{ fontSize: '12px' }} />
             <YAxis tickFormatter={formatValue} style={{ fontSize: '12px' }} />
-            <Tooltip formatter={(value: number) => formatValue(value)} />
+              <Tooltip formatter={(value: number | undefined) => formatValue(value ?? 0)} />
             <Legend />
             <Bar dataKey="value" fill={color} />
           </BarChart>
