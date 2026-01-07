@@ -343,7 +343,9 @@ class MetricsAggregator:
                 failed = failed_result[0] if failed_result and failed_result[0] else 0
                 
                 successful = total - failed
-                success_rate = (successful / total * 100.0) if total > 0 else 0.0
+                # Calculate success rate as a decimal (0.0 to 1.0), not percentage
+                # Frontend will multiply by 100 to display as percentage
+                success_rate = min((successful / total) if total > 0 else 0.0, 1.0)
                 
                 return IngestionMetrics(
                     total=total,
