@@ -1389,6 +1389,26 @@ class PostgreSQLAdapter(StoragePort):
                 elif table_name == 'observations':
                     primary_key = 'observation_id'
                 
+                # Deduplicate DataFrame if using ON CONFLICT (PostgreSQL doesn't allow duplicates in same INSERT)
+                # Keep last occurrence of duplicates (most recent data wins)
+                if primary_key and primary_key in columns:
+                    initial_count = len(df_cleaned)
+                    df_cleaned = df_cleaned.drop_duplicates(subset=[primary_key], keep='last')
+                    duplicates_removed = initial_count - len(df_cleaned)
+                    if duplicates_removed > 0:
+                        logger.warning(
+                            f"Removed {duplicates_removed} duplicate {primary_key} values from {table_name} "
+                            f"DataFrame (kept last occurrence). Original: {initial_count}, Deduplicated: {len(df_cleaned)}"
+                        )
+                        # Rebuild columns list and values after deduplication
+                        columns = list(df_cleaned.columns)
+                        values = DataFrameCleaner.convert_to_tuples(
+                            df_cleaned,
+                            handle_nat=True,
+                            array_columns=set(table_array_cols)
+                        )
+                        columns_str = ', '.join(columns)
+                
                 if primary_key and primary_key in columns:
                     # Use UPSERT (INSERT ... ON CONFLICT DO UPDATE) to handle duplicates
                     # This allows re-running ingestion without errors

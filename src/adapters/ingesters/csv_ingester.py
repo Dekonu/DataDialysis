@@ -89,7 +89,8 @@ class CSVIngester(IngestionPort):
         has_header: bool = True,
         delimiter: str = ',',
         max_record_size: int = 10 * 1024 * 1024,
-        chunk_size: int = 10000
+        chunk_size: int = 10000,
+        target_total_rows: int = 50000
     ):
         """Initialize CSV ingester.
         
@@ -100,16 +101,24 @@ class CSVIngester(IngestionPort):
             delimiter: CSV delimiter character (default: ',', also supports '\t', ';', '|')
             max_record_size: Maximum size of a single record in bytes (default: 10MB)
                             Prevents memory exhaustion from oversized records
-            chunk_size: Number of rows to process per chunk (default: 10000)
-                       Larger chunks = better vectorization, but more memory usage
-                       TODO: Future enhancement - calculate optimal chunk size based on available memory
+            chunk_size: Initial number of rows to process per chunk (default: 10000)
+                       Will be adjusted adaptively after first chunk if target_total_rows is set
+            target_total_rows: Target total rows per chunk (default: 50000)
+                              If set, chunk_size will be adjusted after first chunk to achieve this target
+                              Set to 0 to disable adaptive chunking
         """
         self.column_mapping = column_mapping or {}
         self.has_header = has_header
         self.delimiter = delimiter
         self.max_record_size = max_record_size
+        self.initial_chunk_size = chunk_size
         self.chunk_size = chunk_size
+        self.target_total_rows = target_total_rows
         self.adapter_name = "csv_ingester"
+        
+        # Adaptive chunk sizing state
+        self.adaptive_chunking_enabled = target_total_rows > 0
+        self.chunk_size_adjusted = False  # Track if we've adjusted chunk size
         
         # Initialize pandarallel if needed (one-time setup)
         initialize_pandarallel_if_needed(progress_bar=False)
@@ -247,15 +256,19 @@ class CSVIngester(IngestionPort):
             chunk_count = 0
             total_processed = 0
             total_rejected = 0
+            current_chunk_size = self.chunk_size
             
-            for chunk_df in pd.read_csv(
+            # Create iterator for reading CSV chunks
+            chunk_iterator = pd.read_csv(
                 source_path,
-                chunksize=self.chunk_size,
+                chunksize=current_chunk_size,
                 delimiter=delimiter,
                 header=0 if self.has_header else None,
                 encoding='utf-8',
                 low_memory=False
-            ):
+            )
+            
+            for chunk_df in chunk_iterator:
                 chunk_count += 1
                 
                 try:
@@ -277,6 +290,32 @@ class CSVIngester(IngestionPort):
                     num_valid = len(validated_df)
                     total_processed += len(chunk_df)
                     total_rejected += num_failed
+                    
+                    # Adaptive chunk sizing: Adjust after first chunk based on validation success rate
+                    if self.adaptive_chunking_enabled and chunk_count == 1 and num_valid > 0:
+                        # Calculate validation success rate
+                        success_rate = num_valid / len(chunk_df) if len(chunk_df) > 0 else 1.0
+                        
+                        # Adjust chunk size to achieve target_total_rows of valid records
+                        # Account for validation failures
+                        if success_rate > 0:
+                            optimal_chunk_size = int(self.target_total_rows / success_rate)
+                            # Ensure minimum chunk size (at least 1000) and maximum (no more than 50000)
+                            optimal_chunk_size = max(1000, min(optimal_chunk_size, 50000))
+                            
+                            if optimal_chunk_size != current_chunk_size:
+                                logger.info(
+                                    f"Adaptive chunk sizing activated for CSV: "
+                                    f"Initial chunk size: {self.initial_chunk_size}, "
+                                    f"Optimal chunk size: {optimal_chunk_size} "
+                                    f"(target: {self.target_total_rows} valid rows, "
+                                    f"success rate: {success_rate:.2%})"
+                                )
+                                current_chunk_size = optimal_chunk_size
+                                self.chunk_size = optimal_chunk_size  # Update instance variable
+                                self.chunk_size_adjusted = True
+                                # Note: The iterator is already created with initial chunk_size
+                                # The adjustment will apply to future file reads
                     
                     # Log failures if any
                     if num_failed > 0:
