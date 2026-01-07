@@ -67,19 +67,27 @@ class JSONIngester(IngestionPort):
         - Audit trail of all rejected records
     """
     
-    def __init__(self, max_record_size: int = 10 * 1024 * 1024, chunk_size: int = 10000):
+    def __init__(self, max_record_size: int = 10 * 1024 * 1024, chunk_size: int = 10000, target_total_rows: int = 50000):
         """Initialize JSON ingester.
         
         Parameters:
             max_record_size: Maximum size of a single record in bytes (default: 10MB)
                             Prevents memory exhaustion from oversized records
-            chunk_size: Number of records to process per chunk (default: 10000)
-                       Larger chunks = better vectorization, but more memory usage
-                       TODO: Future enhancement - calculate optimal chunk size based on available memory
+            chunk_size: Initial number of records to process per chunk (default: 10000)
+                       Will be adjusted adaptively after first chunk if target_total_rows is set
+            target_total_rows: Target total rows (patients + encounters + observations) per chunk (default: 50000)
+                              If set, chunk_size will be adjusted after first chunk to achieve this target
+                              Set to 0 to disable adaptive chunking
         """
         self.max_record_size = max_record_size
+        self.initial_chunk_size = chunk_size
         self.chunk_size = chunk_size
+        self.target_total_rows = target_total_rows
         self.adapter_name = "json_ingester"
+        
+        # Adaptive chunk sizing state
+        self.ratios = None  # Will be calculated after first chunk: {'encounters_per_patient': float, 'observations_per_patient': float}
+        self.adaptive_chunking_enabled = target_total_rows > 0
         
         # Initialize pandarallel if needed (one-time setup)
         initialize_pandarallel_if_needed(progress_bar=False)
@@ -245,11 +253,17 @@ class JSONIngester(IngestionPort):
         chunk_count = 0
         total_processed = 0
         total_rejected = 0
+        current_start_idx = 0
         
-        for start_idx in range(0, len(df_all), self.chunk_size):
+        while current_start_idx < len(df_all):
             chunk_count += 1
-            end_idx = min(start_idx + self.chunk_size, len(df_all))
-            chunk_df = df_all.iloc[start_idx:end_idx].copy()
+            
+            # Use adaptive chunk size if enabled and ratios are calculated
+            chunk_size_to_use = self.chunk_size
+            
+            # Calculate end index for this chunk
+            end_idx = min(current_start_idx + chunk_size_to_use, len(df_all))
+            chunk_df = df_all.iloc[current_start_idx:end_idx].copy()
             
             try:
                 # Apply vectorized PII redaction
@@ -267,6 +281,47 @@ class JSONIngester(IngestionPort):
                 num_valid = len(validated_df)
                 total_processed += len(chunk_df)
                 total_rejected += num_failed
+                
+                # Adaptive chunk sizing: Calculate ratios after first chunk
+                if self.adaptive_chunking_enabled and chunk_count == 1 and num_valid > 0:
+                    # Calculate ratios from first chunk
+                    total_patients = len(validated_df)
+                    total_encounters = len(encounters_df)
+                    total_observations = len(observations_df)
+                    
+                    if total_patients > 0:
+                        self.ratios = {
+                            'encounters_per_patient': total_encounters / total_patients,
+                            'observations_per_patient': total_observations / total_patients
+                        }
+                        
+                        # Calculate optimal chunk size to achieve target_total_rows
+                        # Formula: target_total_rows = patients * (1 + encounters_per_patient + observations_per_patient)
+                        total_per_patient = 1.0 + self.ratios['encounters_per_patient'] + self.ratios['observations_per_patient']
+                        
+                        if total_per_patient > 0:
+                            optimal_chunk_size = int(self.target_total_rows / total_per_patient)
+                            # Ensure minimum chunk size (at least 1000) and maximum (no more than 50000)
+                            optimal_chunk_size = max(1000, min(optimal_chunk_size, 50000))
+                            
+                            if optimal_chunk_size != self.chunk_size:
+                                logger.info(
+                                    f"Adaptive chunk sizing activated: "
+                                    f"Initial chunk size: {self.initial_chunk_size}, "
+                                    f"Optimal chunk size: {optimal_chunk_size} "
+                                    f"(target: {self.target_total_rows} total rows, "
+                                    f"ratios: {self.ratios['encounters_per_patient']:.2f} encounters/patient, "
+                                    f"{self.ratios['observations_per_patient']:.2f} observations/patient)"
+                                )
+                                self.chunk_size = optimal_chunk_size
+                
+                # Log chunk statistics (including adaptive sizing info)
+                if self.ratios:
+                    expected_total = num_valid * (1 + self.ratios['encounters_per_patient'] + self.ratios['observations_per_patient'])
+                    logger.debug(
+                        f"Chunk {chunk_count}: {num_valid} patients, {len(encounters_df)} encounters, "
+                        f"{len(observations_df)} observations (expected total: {expected_total:.0f})"
+                    )
                 
                 # Log failures if any
                 if num_failed > 0:
@@ -337,6 +392,9 @@ class JSONIngester(IngestionPort):
                     }
                 )
                 continue
+            
+            # Update start index for next chunk
+            current_start_idx = end_idx
         
         # Log ingestion summary
         if total_processed > 0:
