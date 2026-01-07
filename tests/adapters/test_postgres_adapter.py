@@ -25,6 +25,7 @@ from src.domain.golden_record import (
     EncounterRecord,
     ClinicalObservation,
 )
+from src.domain.services import RedactorService
 from src.infrastructure.config_manager import DatabaseConfig
 
 
@@ -86,8 +87,8 @@ def sample_patient_record():
     return PatientRecord(
         patient_id="MRN001",
         identifiers=["MRN001", "EXT001"],
-        family_name="[REDACTED]",
-        given_names=["[REDACTED]"],
+        family_name=RedactorService.NAME_MASK,
+        given_names=[RedactorService.NAME_MASK],
         date_of_birth="1990-01-01",
         gender="male",
         city="Springfield",
@@ -482,7 +483,7 @@ class TestPostgresAdapterPersistDataFrame:
         
         df = pd.DataFrame({
             'patient_id': ['MRN001', 'MRN002'],
-            'family_name': ['[REDACTED]', '[REDACTED]'],
+            'family_name': [RedactorService.NAME_MASK, RedactorService.NAME_MASK],
             'city': ['Springfield', 'Chicago'],
             'state': ['IL', 'IL'],
             'postal_code': ['62701', '60601'],
@@ -638,8 +639,8 @@ class TestPostgresAdapterIntegration:
         record2 = GoldenRecord(
             patient=PatientRecord(
                 patient_id="MRN002",
-                family_name="[REDACTED]",
-                given_names=["[REDACTED]"],
+                family_name=RedactorService.NAME_MASK,
+                given_names=[RedactorService.NAME_MASK],
                 city="Chicago",
                 state="IL",
                 postal_code="60601",

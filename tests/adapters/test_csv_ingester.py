@@ -24,6 +24,7 @@ import os
 from src.adapters.ingesters.csv_ingester import CSVIngester
 from src.domain.ports import Result, ValidationError
 from src.infrastructure.redaction_context import set_redaction_context, get_redaction_context
+from src.domain.services import RedactorService
 
 
 class TestCSVIngesterInitialization:
@@ -144,7 +145,7 @@ class TestDataFrameRedaction:
         redacted_df = ingester._redact_dataframe(df)
         
         # SSNs should be redacted
-        assert all(redacted_df['ssn'].str.startswith('***-'))
+        assert all(redacted_df['ssn'] == RedactorService.SSN_MASK)
     
     def test_redact_names(self):
         """Test name redaction in DataFrame."""
@@ -158,8 +159,8 @@ class TestDataFrameRedaction:
         redacted_df = ingester._redact_dataframe(df)
         
         # Names should be redacted
-        assert all(redacted_df['first_name'] == '[REDACTED]')
-        assert all(redacted_df['last_name'] == '[REDACTED]')
+        assert all(redacted_df['first_name'] == RedactorService.NAME_MASK)
+        assert all(redacted_df['last_name'] == RedactorService.NAME_MASK)
     
     def test_redact_phone(self):
         """Test phone redaction in DataFrame."""
@@ -172,7 +173,7 @@ class TestDataFrameRedaction:
         redacted_df = ingester._redact_dataframe(df)
         
         # Phone should be redacted
-        assert redacted_df['phone'].iloc[0].startswith('***-')
+        assert redacted_df['phone'].iloc[0] == RedactorService.PHONE_MASK
     
     def test_redact_email(self):
         """Test email redaction in DataFrame."""
@@ -185,7 +186,7 @@ class TestDataFrameRedaction:
         redacted_df = ingester._redact_dataframe(df)
         
         # Email should be redacted
-        assert redacted_df['email'].iloc[0] == '[REDACTED]'
+        assert redacted_df['email'].iloc[0] == RedactorService.EMAIL_MASK
     
     def test_redact_address(self):
         """Test address redaction in DataFrame."""
@@ -198,7 +199,7 @@ class TestDataFrameRedaction:
         redacted_df = ingester._redact_dataframe(df)
         
         # Address should be redacted
-        assert redacted_df['address_line1'].iloc[0] == '[REDACTED]'
+        assert redacted_df['address_line1'].iloc[0] == RedactorService.ADDRESS_MASK
     
     def test_redact_dob(self):
         """Test date of birth redaction in DataFrame."""
@@ -280,14 +281,7 @@ class TestRedactionLogging:
         """Test that redaction logging gracefully handles missing context."""
         ingester = CSVIngester()
         
-        # Don't set context
-        # Clear any existing context
-        try:
-            from src.infrastructure.redaction_context import clear_redaction_context
-            clear_redaction_context()
-        except:
-            pass
-        
+        # Don't set context - context should be None by default
         # Create DataFrame with PII
         df = pd.DataFrame({
             'patient_id': ['MRN001'],
@@ -309,11 +303,11 @@ class TestDataFrameValidation:
         # Create valid patient DataFrame
         df = pd.DataFrame({
             'patient_id': ['MRN001', 'MRN002'],
-            'first_name': ['[REDACTED]', '[REDACTED]'],
-            'last_name': ['[REDACTED]', '[REDACTED]'],
+            'first_name': [RedactorService.NAME_MASK, RedactorService.NAME_MASK],
+            'last_name': [RedactorService.NAME_MASK, RedactorService.NAME_MASK],
             'date_of_birth': [None, None],
             'gender': ['male', 'female']
-        })
+        })  # type: ignore
         
         validated_df, failed_indices = ingester._validate_dataframe_chunk(
             df, 'test.csv', 1, csv_type='patients'
@@ -372,8 +366,8 @@ class TestDataFrameValidation:
         
         # Create DataFrame without patient_id
         df = pd.DataFrame({
-            'first_name': ['[REDACTED]'],
-            'last_name': ['[REDACTED]']
+            'first_name': [RedactorService.NAME_MASK],
+            'last_name': [RedactorService.NAME_MASK]
         })
         
         validated_df, failed_indices = ingester._validate_dataframe_chunk(
@@ -505,7 +499,7 @@ class TestErrorHandling:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
             f.write('patient_id,first_name,last_name\n')
             f.write('MRN001,John,Doe\n')
-            f.write(',,,\n')  # Empty row
+            f.write(',,\n')  # Empty row
             f.write('MRN003,Jane,Smith\n')
             temp_path = f.name
         

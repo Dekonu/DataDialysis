@@ -23,6 +23,7 @@ import numpy as np
 
 from src.adapters.storage.postgresql_adapter import PostgreSQLAdapter
 from src.domain.ports import Result, StorageError
+from src.domain.services import RedactorService
 from src.infrastructure.config_manager import DatabaseConfig
 from src.domain.golden_record import AdministrativeGender, EncounterClass, ObservationCategory
 
@@ -181,7 +182,7 @@ class TestPersistDataFrameUPSERT:
         
         df = pd.DataFrame({
             'patient_id': ['MRN001', 'MRN002'],
-            'family_name': ['[REDACTED]', '[REDACTED]'],
+            'family_name': [RedactorService.NAME_MASK, RedactorService.NAME_MASK],
             'city': ['Springfield', 'Chicago'],
             'state': ['IL', 'IL'],
             'postal_code': ['62701', '60601'],
@@ -270,7 +271,7 @@ class TestPersistDataFrameArrayColumns:
             'given_names': [['John', 'Michael']],
             'name_prefix': [['Mr']],
             'name_suffix': [[]],
-            'family_name': ['[REDACTED]'],
+            'family_name': [RedactorService.NAME_MASK],
             'city': ['Springfield'],
             'state': ['IL'],
             'postal_code': ['62701'],
@@ -322,7 +323,7 @@ class TestPersistDataFrameArrayColumns:
             'patient_id': ['MRN001'],
             'identifiers': [None],
             'given_names': [np.nan],
-            'family_name': ['[REDACTED]'],
+            'family_name': [RedactorService.NAME_MASK],
             'city': ['Springfield'],
             'state': ['IL'],
             'postal_code': ['62701'],
@@ -369,7 +370,7 @@ class TestPersistDataFrameEnumConversion:
         df = pd.DataFrame({
             'patient_id': ['MRN001'],
             'gender': [AdministrativeGender.MALE],
-            'family_name': ['[REDACTED]'],
+            'family_name': [RedactorService.NAME_MASK],
             'city': ['Springfield'],
             'state': ['IL'],
             'postal_code': ['62701'],
@@ -416,7 +417,7 @@ class TestPersistDataFrameRequiredColumns:
         # DataFrame without required columns
         df = pd.DataFrame({
             'patient_id': ['MRN001'],
-            'family_name': ['[REDACTED]'],
+            'family_name': [RedactorService.NAME_MASK],
             'city': ['Springfield'],
             'state': ['IL'],
             'postal_code': ['62701'],
@@ -450,7 +451,7 @@ class TestPersistDataFrameRequiredColumns:
         df = pd.DataFrame({
             'patient_id': ['MRN001'],
             'source_adapter': ['json_ingester'],  # Explicit source_adapter
-            'family_name': ['[REDACTED]'],
+            'family_name': [RedactorService.NAME_MASK],
             'city': ['Springfield'],
             'state': ['IL'],
             'postal_code': ['62701'],
@@ -483,7 +484,7 @@ class TestPersistDataFrameMultipleTables:
         
         df = pd.DataFrame({
             'patient_id': ['MRN001'],
-            'family_name': ['[REDACTED]'],
+            'family_name': [RedactorService.NAME_MASK],
             'city': ['Springfield'],
             'state': ['IL'],
             'postal_code': ['62701'],
@@ -561,7 +562,7 @@ class TestPersistDataFrameErrorHandling:
         
         df = pd.DataFrame({
             'patient_id': ['MRN001'],
-            'family_name': ['[REDACTED]'],
+            'family_name': [RedactorService.NAME_MASK],
             'city': ['Springfield'],
             'state': ['IL'],
             'postal_code': ['62701'],
@@ -613,7 +614,7 @@ class TestPersistDataFrameColumnFiltering:
         # DataFrame with extra columns that don't exist in schema
         df = pd.DataFrame({
             'patient_id': ['MRN001'],
-            'family_name': ['[REDACTED]'],
+            'family_name': [RedactorService.NAME_MASK],
             'city': ['Springfield'],
             'state': ['IL'],
             'postal_code': ['62701'],
