@@ -12,6 +12,8 @@ eggs/
 .eggs/
 lib/
 lib64/
+# Exception: dashboard-frontend/lib/ should be committed
+!dashboard-frontend/lib/
 parts/
 sdist/
 var/
@@ -28,6 +30,7 @@ ENV/
 Scripts/
 Include/
 Lib/
+!dashboard-frontend/lib/
 pyvenv.cfg
 
 # IDE
