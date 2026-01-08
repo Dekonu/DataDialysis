@@ -28,14 +28,14 @@ services:
       dockerfile: Dockerfile
     container_name: datadialysis-api
     environment:
-      # Database configuration
-      DB_TYPE: postgresql
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: ${POSTGRES_DB:-datadialysis}
-      DB_USER: ${POSTGRES_USER:-datadialysis}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-datadialysis}
-      DB_SSL_MODE: prefer
+      # Database configuration (using DD_ prefix as expected by config_manager)
+      DD_DB_TYPE: postgresql
+      DD_DB_HOST: postgres
+      DD_DB_PORT: 5432
+      DD_DB_NAME: ${POSTGRES_DB:-datadialysis}
+      DD_DB_USER: ${POSTGRES_USER:-datadialysis}
+      DD_DB_PASSWORD: ${POSTGRES_PASSWORD:-datadialysis}
+      DD_DB_SSL_MODE: prefer
       
       # API configuration
       API_HOST: 0.0.0.0
