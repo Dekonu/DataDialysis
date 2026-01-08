@@ -322,8 +322,22 @@ def process_ingestion(
                         
                         # Check if we have all 3 DataFrames for a complete chunk
                         # For JSON ingestion: chunk = patients + encounters + observations
+                        # For CSV ingestion: may only have one table type (patients, encounters, or observations)
                         # Check that all values are not None (can't use all() directly on DataFrames)
-                        if all(df is not None for df in chunk_dataframes.values()):
+                        has_complete_chunk = all(df is not None for df in chunk_dataframes.values())
+                        
+                        # For CSV ingestion with single table type, check if we should persist immediately
+                        # This happens when:
+                        # 1. We have a DataFrame for one table
+                        # 2. The other two tables are None (not part of this ingestion)
+                        # 3. This is a single-table CSV (only one table type in the file)
+                        non_none_count = sum(1 for df in chunk_dataframes.values() if df is not None)
+                        is_single_table_csv = (
+                            non_none_count == 1 and
+                            chunk_dataframes[table_name] is not None
+                        )
+                        
+                        if has_complete_chunk:
                             # Phase 3: Parallel Chunk Processing
                             # Create a copy of the chunk dataframes for parallel processing
                             chunk_to_process = {
@@ -573,6 +587,39 @@ def process_ingestion(
                                 'observations': None
                             }
                             chunk_tables_persisted.clear()
+                        elif is_single_table_csv:
+                            # Single-table CSV (e.g., patients-only): persist immediately
+                            # This handles CSV files that only contain one table type
+                            logger.info(
+                                f"Single-table CSV detected ({table_name}), persisting immediately: "
+                                f"{len(df)} rows"
+                            )
+                            
+                            # Persist this DataFrame directly (no need to wait for other tables)
+                            persist_result = storage.persist_dataframe(df, table_name)
+                            if persist_result.is_success():
+                                success_count += persist_result.value
+                                logger.info(f"Persisted {persist_result.value} rows to {table_name}")
+                                
+                                # Flush redaction logs asynchronously after persisting
+                                if hasattr(storage, 'flush_redaction_logs'):
+                                    with flush_lock:
+                                        redaction_logs = redaction_logger.get_logs()
+                                        if redaction_logs:
+                                            logs_copy = redaction_logs.copy()
+                                            redaction_logger.clear_logs()
+                                            future = flush_executor.submit(
+                                                flush_redaction_logs_async,
+                                                storage,
+                                                logs_copy
+                                            )
+                                            pending_flush_futures.append(future)
+                            else:
+                                failure_count += len(df)
+                                logger.error(f"Failed to persist {table_name}: {persist_result.error}")
+                            
+                            # Clear this table from chunk_dataframes since we've persisted it
+                            chunk_dataframes[table_name] = None
                         else:
                             # Not a complete chunk yet, wait for more DataFrames
                             logger.debug(
