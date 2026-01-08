@@ -157,7 +157,7 @@ export class WebSocketClient {
       }
     };
 
-    this.ws.onerror = (error) => {
+    this.ws.onerror = () => {
       // WebSocket error event doesn't provide detailed error info
       // The actual error will be available in onclose event
       console.warn('WebSocket error event triggered. Connection may have failed.');
