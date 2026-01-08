@@ -227,7 +227,8 @@ class TestCSVToDuckDBFlow:
         
         for result in adapter.ingest(str(csv_test_file)):
             if result.is_success():
-                df = result.value
+                # Unpack tuple: (redacted_df, raw_df)
+                df, _ = result.value
                 # Persist DataFrame to patients table
                 persist_result = duckdb_adapter.persist_dataframe(df, "patients")
                 if persist_result.is_success():
@@ -277,7 +278,8 @@ class TestCSVToDuckDBFlow:
         total_rows = 0
         for result in adapter.ingest(str(csv_test_file)):
             if result.is_success():
-                df = result.value
+                # Unpack tuple: (redacted_df, raw_df)
+                df, _ = result.value
                 persist_result = duckdb_adapter.persist_dataframe(df, "patients")
                 if persist_result.is_success():
                     total_rows += persist_result.value
@@ -305,7 +307,8 @@ class TestJSONToDuckDBFlow:
         
         for result in adapter.ingest(str(json_test_file)):
             if result.is_success():
-                df = result.value
+                # Unpack tuple: (redacted_df, raw_df) for patients/encounters/observations
+                df, _ = result.value
                 # Determine table based on columns
                 if 'patient_id' in df.columns:
                     persist_result = duckdb_adapter.persist_dataframe(df, "patients")
@@ -390,7 +393,8 @@ class TestXMLToDuckDBFlow:
         
         for result in adapter.ingest(str(xml_test_file)):
             if result.is_success():
-                golden_record = result.value
+                # Unpack tuple: (GoldenRecord, original_record_data)
+                golden_record, _ = result.value
                 persist_result = duckdb_adapter.persist(golden_record)
                 if persist_result.is_success():
                     success_count += 1
@@ -444,7 +448,8 @@ class TestAuditTrail:
         # Process and persist
         for result in adapter.ingest(str(csv_test_file)):
             if result.is_success():
-                df = result.value
+                # Unpack tuple: (redacted_df, raw_df)
+                df, _ = result.value
                 duckdb_adapter.persist_dataframe(df, "patients")
                 break  # Just test one batch
         
@@ -483,7 +488,8 @@ class TestEndToEndFlow:
         total_persisted = 0
         for result in adapter.ingest(str(csv_test_file)):
             if result.is_success():
-                df = result.value
+                # Unpack tuple: (redacted_df, raw_df)
+                df, _ = result.value
                 # Verify DataFrame has expected columns (redaction happened)
                 assert 'patient_id' in df.columns
                 # Verify PII columns are redacted

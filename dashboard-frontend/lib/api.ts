@@ -6,6 +6,9 @@ import type {
   AuditLogsResponse,
   RedactionLogsResponse,
   CircuitBreakerStatus,
+  ChangeHistoryResponse,
+  ChangeSummary,
+  RecordChangeHistoryResponse,
 } from '@/types/api';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -120,6 +123,86 @@ export const api = {
   },
   circuitBreaker: {
     status: () => apiRequest<CircuitBreakerStatus>('/api/circuit-breaker/status'),
+  },
+  changeHistory: {
+    list: (params?: {
+      limit?: number;
+      offset?: number;
+      table_name?: string;
+      record_id?: string;
+      field_name?: string;
+      change_type?: 'INSERT' | 'UPDATE';
+      start_date?: string;
+      end_date?: string;
+      ingestion_id?: string;
+      source_adapter?: string;
+      sort_by?: string;
+      sort_order?: 'ASC' | 'DESC';
+    }) => {
+      const searchParams = new URLSearchParams();
+      if (params) {
+        Object.entries(params).forEach(([key, value]) => {
+          if (value !== undefined && value !== null) {
+            searchParams.append(key, String(value));
+          }
+        });
+      }
+      const query = searchParams.toString();
+      return apiRequest<ChangeHistoryResponse>(`/api/change-history${query ? `?${query}` : ''}`);
+    },
+    summary: (params?: {
+      time_range?: TimeRange;
+      table_name?: string;
+    }) => {
+      const searchParams = new URLSearchParams();
+      if (params) {
+        Object.entries(params).forEach(([key, value]) => {
+          if (value !== undefined && value !== null) {
+            searchParams.append(key, String(value));
+          }
+        });
+      }
+      const query = searchParams.toString();
+      return apiRequest<ChangeSummary>(`/api/change-history/summary${query ? `?${query}` : ''}`);
+    },
+    record: (tableName: string, recordId: string, params?: {
+      limit?: number;
+    }) => {
+      const searchParams = new URLSearchParams();
+      if (params) {
+        Object.entries(params).forEach(([key, value]) => {
+          if (value !== undefined && value !== null) {
+            searchParams.append(key, String(value));
+          }
+        });
+      }
+      const query = searchParams.toString();
+      return apiRequest<RecordChangeHistoryResponse>(
+        `/api/change-history/record/${tableName}/${recordId}${query ? `?${query}` : ''}`
+      );
+    },
+    export: (params: {
+      format: 'json' | 'csv';
+      table_name?: string;
+      start_date?: string;
+      end_date?: string;
+      change_type?: 'INSERT' | 'UPDATE';
+    }) => {
+      const searchParams = new URLSearchParams();
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) {
+          searchParams.append(key, String(value));
+        }
+      });
+      return fetch(`${API_BASE_URL}/api/change-history/export?${searchParams.toString()}`).then(
+        (response) => {
+          if (!response.ok) {
+            throw new Error(`Export failed: ${response.statusText}`);
+          }
+          return response.blob();
+        }
+      );
+    },
   },
 };
 
