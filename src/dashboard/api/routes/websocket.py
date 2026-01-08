@@ -5,6 +5,7 @@ This module provides WebSocket support for real-time dashboard updates.
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -31,9 +32,15 @@ logger = logging.getLogger(__name__)
 # Update interval in seconds
 UPDATE_INTERVAL = 5.0
 
+# Thread pool for running synchronous database operations
+_metrics_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="metrics-fetcher")
+
 
 async def fetch_latest_metrics(storage, time_range: str = "24h"):
     """Fetch latest metrics from all services.
+    
+    This function runs synchronous database operations in a thread pool
+    to avoid blocking the async event loop.
     
     Parameters:
         storage: Storage adapter instance
@@ -42,45 +49,56 @@ async def fetch_latest_metrics(storage, time_range: str = "24h"):
     Returns:
         Dictionary containing all metrics or None if error
     """
+    def _fetch_metrics_sync():
+        """Synchronous function to fetch metrics (runs in thread pool)."""
+        try:
+            # Initialize services
+            metrics_aggregator = MetricsAggregator(storage)
+            security_service = SecurityMetricsService(storage)
+            performance_service = PerformanceMetricsService(storage)
+            circuit_breaker_service = CircuitBreakerService(storage)
+            
+            # Fetch metrics (these are synchronous)
+            overview_result = metrics_aggregator.get_overview_metrics(time_range)
+            security_result = security_service.get_security_metrics(time_range)
+            performance_result = performance_service.get_performance_metrics(time_range)
+            circuit_breaker_result = circuit_breaker_service.get_status()
+            
+            metrics = {}
+            
+            if overview_result.is_success():
+                metrics["overview"] = overview_result.value
+            else:
+                logger.warning(f"Failed to fetch overview metrics: {overview_result.error}")
+            
+            if security_result.is_success():
+                metrics["security"] = security_result.value
+            else:
+                logger.warning(f"Failed to fetch security metrics: {security_result.error}")
+            
+            if performance_result.is_success():
+                metrics["performance"] = performance_result.value
+            else:
+                logger.warning(f"Failed to fetch performance metrics: {performance_result.error}")
+            
+            if circuit_breaker_result.is_success():
+                metrics["circuit_breaker"] = circuit_breaker_result.value
+            else:
+                logger.warning(f"Failed to fetch circuit breaker status: {circuit_breaker_result.error}")
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Error fetching metrics: {str(e)}", exc_info=True)
+            return None
+    
+    # Run synchronous database operations in thread pool
+    loop = asyncio.get_event_loop()
     try:
-        # Initialize services
-        metrics_aggregator = MetricsAggregator(storage)
-        security_service = SecurityMetricsService(storage)
-        performance_service = PerformanceMetricsService(storage)
-        circuit_breaker_service = CircuitBreakerService(storage)
-        
-        # Fetch metrics (these are synchronous, but we're in async context)
-        overview_result = metrics_aggregator.get_overview_metrics(time_range)
-        security_result = security_service.get_security_metrics(time_range)
-        performance_result = performance_service.get_performance_metrics(time_range)
-        circuit_breaker_result = circuit_breaker_service.get_status()
-        
-        metrics = {}
-        
-        if overview_result.is_success():
-            metrics["overview"] = overview_result.value
-        else:
-            logger.warning(f"Failed to fetch overview metrics: {overview_result.error}")
-        
-        if security_result.is_success():
-            metrics["security"] = security_result.value
-        else:
-            logger.warning(f"Failed to fetch security metrics: {security_result.error}")
-        
-        if performance_result.is_success():
-            metrics["performance"] = performance_result.value
-        else:
-            logger.warning(f"Failed to fetch performance metrics: {performance_result.error}")
-        
-        if circuit_breaker_result.is_success():
-            metrics["circuit_breaker"] = circuit_breaker_result.value
-        else:
-            logger.warning(f"Failed to fetch circuit breaker status: {circuit_breaker_result.error}")
-        
+        metrics = await loop.run_in_executor(_metrics_executor, _fetch_metrics_sync)
         return metrics
-        
     except Exception as e:
-        logger.error(f"Error fetching metrics: {str(e)}", exc_info=True)
+        logger.error(f"Error executing metrics fetch: {str(e)}", exc_info=True)
         return None
 
 

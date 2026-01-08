@@ -245,13 +245,99 @@ def process_ingestion(
                             failure_count += len(df)
                             continue
                         
+                        # For encounters/observations, ensure referenced patients exist
+                        if table_name in ['encounters', 'observations'] and 'patient_id' in df.columns:
+                            referenced_patient_ids = set(df['patient_id'].dropna().unique())
+                            if referenced_patient_ids:
+                                try:
+                                    from src.dashboard.services.connection_helper import get_db_connection
+                                    with get_db_connection(storage) as conn:
+                                        if conn:
+                                            # Query existing patient_ids
+                                            placeholders = ','.join(['%s'] * len(referenced_patient_ids))
+                                            query = f"SELECT patient_id FROM patients WHERE patient_id IN ({placeholders})"
+                                            result = conn.execute(query, list(referenced_patient_ids))
+                                            existing_patient_ids = set()
+                                            if result:
+                                                existing_patient_ids = {row[0] for row in result.fetchall()}
+                                            
+                                            # Create minimal patient records for missing patient_ids
+                                            missing_patient_ids = referenced_patient_ids - existing_patient_ids
+                                            if missing_patient_ids:
+                                                logger.info(
+                                                    f"Creating {len(missing_patient_ids)} minimal patient records "
+                                                    f"for missing patient_ids referenced in {table_name}"
+                                                )
+                                                import pandas as pd
+                                                minimal_patients_data = []
+                                                for patient_id in missing_patient_ids:
+                                                    minimal_patients_data.append({
+                                                        'patient_id': patient_id,
+                                                        'identifiers': [],
+                                                        'family_name': None,
+                                                        'given_names': [],
+                                                        'name_prefix': [],
+                                                        'name_suffix': [],
+                                                        'date_of_birth': None,
+                                                        'gender': None,
+                                                        'deceased': None,
+                                                        'marital_status': None,
+                                                        'address_line1': None,
+                                                        'address_line2': None,
+                                                        'city': None,
+                                                        'state': None,
+                                                        'postal_code': None,
+                                                        'country': None,
+                                                        'address_use': None,
+                                                        'phone': None,
+                                                        'email': None,
+                                                        'fax': None,
+                                                        'emergency_contact_name': None,
+                                                        'emergency_contact_relationship': None,
+                                                        'emergency_contact_phone': None,
+                                                        'language': None,
+                                                        'managing_organization': None,
+                                                        'source_adapter': 'csv_ingester',
+                                                        'transformation_hash': None
+                                                    })
+                                                
+                                                # Persist minimal patients first
+                                                minimal_patients_df = pd.DataFrame(minimal_patients_data)
+                                                patients_result = storage.persist_dataframe(minimal_patients_df, 'patients')
+                                                if patients_result.is_success():
+                                                    logger.info(f"Persisted {patients_result.value} minimal patient records")
+                                                else:
+                                                    logger.warning(
+                                                        f"Failed to persist minimal patients: {patients_result.error}. "
+                                                        "Proceeding anyway - may cause foreign key constraint errors."
+                                                    )
+                                except Exception as e:
+                                    logger.warning(
+                                        f"Could not ensure patients exist for {table_name}: {e}. "
+                                        "Proceeding anyway - may cause foreign key constraint errors."
+                                    )
+                        
                         # Store DataFrame for parallel persistence
                         chunk_dataframes[table_name] = df
                         
                         # Check if we have all 3 DataFrames for a complete chunk
                         # For JSON ingestion: chunk = patients + encounters + observations
+                        # For CSV ingestion: may only have one table type (patients, encounters, or observations)
                         # Check that all values are not None (can't use all() directly on DataFrames)
-                        if all(df is not None for df in chunk_dataframes.values()):
+                        has_complete_chunk = all(df is not None for df in chunk_dataframes.values())
+                        
+                        # For CSV ingestion with single table type, check if we should persist immediately
+                        # This happens when:
+                        # 1. We have a DataFrame for one table
+                        # 2. The other two tables are None (not part of this ingestion)
+                        # 3. This is a single-table CSV (only one table type in the file)
+                        non_none_count = sum(1 for df in chunk_dataframes.values() if df is not None)
+                        is_single_table_csv = (
+                            non_none_count == 1 and
+                            chunk_dataframes[table_name] is not None
+                        )
+                        
+                        if has_complete_chunk:
                             # Phase 3: Parallel Chunk Processing
                             # Create a copy of the chunk dataframes for parallel processing
                             chunk_to_process = {
@@ -291,7 +377,91 @@ def process_ingestion(
                                     # 1. Patients first (no dependencies)
                                     # 2. Encounters and observations in parallel (both depend on patients)
                                     
-                                    # Step 1: Persist patients first (required for FK constraints)
+                                    # Step 1: Ensure all referenced patients exist
+                                    # Collect patient_ids from encounters and observations
+                                    referenced_patient_ids = set()
+                                    if chunk_data['encounters'] is not None and not chunk_data['encounters'].empty:
+                                        if 'patient_id' in chunk_data['encounters'].columns:
+                                            referenced_patient_ids.update(
+                                                chunk_data['encounters']['patient_id'].dropna().unique()
+                                            )
+                                    if chunk_data['observations'] is not None and not chunk_data['observations'].empty:
+                                        if 'patient_id' in chunk_data['observations'].columns:
+                                            referenced_patient_ids.update(
+                                                chunk_data['observations']['patient_id'].dropna().unique()
+                                            )
+                                    
+                                    # Check which patient_ids already exist in the database
+                                    existing_patient_ids = set()
+                                    if referenced_patient_ids:
+                                        try:
+                                            from src.dashboard.services.connection_helper import get_db_connection
+                                            with get_db_connection(storage_adapter) as conn:
+                                                if conn:
+                                                    # Query existing patient_ids
+                                                    placeholders = ','.join(['%s'] * len(referenced_patient_ids))
+                                                    query = f"SELECT patient_id FROM patients WHERE patient_id IN ({placeholders})"
+                                                    result = conn.execute(query, list(referenced_patient_ids))
+                                                    if result:
+                                                        existing_patient_ids = {row[0] for row in result.fetchall()}
+                                        except Exception as e:
+                                            logger.warning(
+                                                f"[Chunk {chunk_num}] Could not check existing patients: {e}. "
+                                                "Proceeding with assumption that patients may not exist."
+                                            )
+                                    
+                                    # Create minimal patient records for missing patient_ids
+                                    missing_patient_ids = referenced_patient_ids - existing_patient_ids
+                                    if missing_patient_ids:
+                                        logger.info(
+                                            f"[Chunk {chunk_num}] Creating {len(missing_patient_ids)} minimal patient records "
+                                            f"for missing patient_ids"
+                                        )
+                                        minimal_patients_data = []
+                                        for patient_id in missing_patient_ids:
+                                            minimal_patients_data.append({
+                                                'patient_id': patient_id,
+                                                'identifiers': [],
+                                                'family_name': None,
+                                                'given_names': [],
+                                                'name_prefix': [],
+                                                'name_suffix': [],
+                                                'date_of_birth': None,
+                                                'gender': None,
+                                                'deceased': None,
+                                                'marital_status': None,
+                                                'address_line1': None,
+                                                'address_line2': None,
+                                                'city': None,
+                                                'state': None,
+                                                'postal_code': None,
+                                                'country': None,
+                                                'address_use': None,
+                                                'phone': None,
+                                                'email': None,
+                                                'fax': None,
+                                                'emergency_contact_name': None,
+                                                'emergency_contact_relationship': None,
+                                                'emergency_contact_phone': None,
+                                                'language': None,
+                                                'managing_organization': None,
+                                                'source_adapter': 'csv_ingester',  # Default, will be overridden if present
+                                                'transformation_hash': None
+                                            })
+                                        
+                                        # Add minimal patients to patients DataFrame
+                                        import pandas as pd
+                                        minimal_patients_df = pd.DataFrame(minimal_patients_data)
+                                        if chunk_data['patients'] is None or chunk_data['patients'].empty:
+                                            chunk_data['patients'] = minimal_patients_df
+                                        else:
+                                            # Merge with existing patients, avoiding duplicates
+                                            chunk_data['patients'] = pd.concat([
+                                                chunk_data['patients'],
+                                                minimal_patients_df[~minimal_patients_df['patient_id'].isin(chunk_data['patients']['patient_id'])]
+                                            ], ignore_index=True)
+                                    
+                                    # Step 2: Persist patients (including minimal ones)
                                     patients_result = storage_adapter.persist_dataframe(
                                         chunk_data['patients'],
                                         'patients'
@@ -302,7 +472,7 @@ def process_ingestion(
                                             f"[Chunk {chunk_num}] Persisted {patients_result.value} rows to patients"
                                         )
                                     else:
-                                        chunk_failure += len(chunk_data['patients'])
+                                        chunk_failure += len(chunk_data['patients']) if chunk_data['patients'] is not None else 0
                                         logger.error(
                                             f"[Chunk {chunk_num}] Failed to persist patients: {patients_result.error}"
                                         )
@@ -417,6 +587,39 @@ def process_ingestion(
                                 'observations': None
                             }
                             chunk_tables_persisted.clear()
+                        elif is_single_table_csv:
+                            # Single-table CSV (e.g., patients-only): persist immediately
+                            # This handles CSV files that only contain one table type
+                            logger.info(
+                                f"Single-table CSV detected ({table_name}), persisting immediately: "
+                                f"{len(df)} rows"
+                            )
+                            
+                            # Persist this DataFrame directly (no need to wait for other tables)
+                            persist_result = storage.persist_dataframe(df, table_name)
+                            if persist_result.is_success():
+                                success_count += persist_result.value
+                                logger.info(f"Persisted {persist_result.value} rows to {table_name}")
+                                
+                                # Flush redaction logs asynchronously after persisting
+                                if hasattr(storage, 'flush_redaction_logs'):
+                                    with flush_lock:
+                                        redaction_logs = redaction_logger.get_logs()
+                                        if redaction_logs:
+                                            logs_copy = redaction_logs.copy()
+                                            redaction_logger.clear_logs()
+                                            future = flush_executor.submit(
+                                                flush_redaction_logs_async,
+                                                storage,
+                                                logs_copy
+                                            )
+                                            pending_flush_futures.append(future)
+                            else:
+                                failure_count += len(df)
+                                logger.error(f"Failed to persist {table_name}: {persist_result.error}")
+                            
+                            # Clear this table from chunk_dataframes since we've persisted it
+                            chunk_dataframes[table_name] = None
                         else:
                             # Not a complete chunk yet, wait for more DataFrames
                             logger.debug(
