@@ -77,12 +77,12 @@ export function ChangeHistoryFilters() {
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <div className="space-y-2">
             <Label htmlFor="table_name">Table Name</Label>
-            <Select value={tableName} onValueChange={setTableName}>
+            <Select value={tableName || 'all'} onValueChange={(value) => setTableName(value === 'all' ? '' : value)}>
               <SelectTrigger id="table_name">
                 <SelectValue placeholder="All tables" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All tables</SelectItem>
+                <SelectItem value="all">All tables</SelectItem>
                 <SelectItem value="patients">Patients</SelectItem>
                 <SelectItem value="encounters">Encounters</SelectItem>
                 <SelectItem value="observations">Observations</SelectItem>
@@ -112,12 +112,12 @@ export function ChangeHistoryFilters() {
 
           <div className="space-y-2">
             <Label htmlFor="change_type">Change Type</Label>
-            <Select value={changeType} onValueChange={setChangeType}>
+            <Select value={changeType || 'all'} onValueChange={(value) => setChangeType(value === 'all' ? '' : value)}>
               <SelectTrigger id="change_type">
                 <SelectValue placeholder="All types" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All types</SelectItem>
+                <SelectItem value="all">All types</SelectItem>
                 <SelectItem value="INSERT">INSERT</SelectItem>
                 <SelectItem value="UPDATE">UPDATE</SelectItem>
               </SelectContent>
