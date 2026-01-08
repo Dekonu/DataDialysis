@@ -156,3 +156,43 @@ export interface CircuitBreakerStatus {
   min_records_before_check: number;
 }
 
+// Change History Types (CDC)
+export interface ChangeEvent {
+  change_id: string;
+  table_name: string;
+  record_id: string;
+  field_name: string;
+  old_value?: string | null;
+  new_value?: string | null;
+  change_type: 'INSERT' | 'UPDATE' | 'DELETE';
+  changed_at: string; // ISO datetime string
+  ingestion_id?: string | null;
+  source_adapter?: string | null;
+  changed_by?: string | null;
+}
+
+export interface ChangeHistoryResponse {
+  changes: ChangeEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ChangeSummary {
+  total_changes: number;
+  unique_records: number;
+  tables_affected: number;
+  fields_changed: number;
+  inserts: number;
+  updates: number;
+  deletes: number;
+  time_range: string;
+  start_time: string;
+  end_time: string;
+}
+
+export interface RecordChangeHistoryResponse {
+  changes: ChangeEvent[];
+  table_name: string;
+  record_id: string;
+}
