@@ -673,9 +673,30 @@ class CSVIngester(IngestionPort):
                 # Convert row to dictionary
                 row_dict = row.to_dict()
                 
-                # Convert numeric fields to strings where needed (pandas may read ZIP codes as int)
-                if 'postal_code' in row_dict and pd.notna(row_dict.get('postal_code')):
-                    row_dict['postal_code'] = str(row_dict['postal_code'])
+                # Clean up NaN values and convert types (pandas reads missing values as NaN/float)
+                # This is critical: Pydantic expects None for Optional fields, not NaN
+                for key, value in row_dict.items():
+                    # Skip list/array values (like identifiers) - pd.isna() doesn't work on them
+                    if isinstance(value, (list, tuple)):
+                        continue
+                    
+                    # Convert NaN values to None FIRST (Pydantic expects None for Optional fields)
+                    # Check both pd.isna() to catch all NaN cases (including float NaN)
+                    if pd.isna(value):
+                        row_dict[key] = None
+                        continue  # Skip further processing for NaN values
+                    
+                    # Handle specific field conversions for non-NaN values
+                    if key == 'postal_code' and pd.notna(value):
+                        # Convert postal_code to string
+                        row_dict[key] = str(value)
+                    elif isinstance(value, float) and key in ['state', 'city']:
+                        # Convert float to string for string fields
+                        row_dict[key] = str(int(value)) if value == int(value) else str(value)
+                    elif isinstance(value, float) and key in ['value', 'unit']:
+                        # Convert float to string for observation value/unit fields
+                        # This handles cases where CSV has numeric values that should be strings
+                        row_dict[key] = str(int(value)) if value == int(value) else str(value)
                 
                 # Handle diagnosis_codes (convert comma-separated string to list)
                 if 'diagnosis_codes' in row_dict and pd.notna(row_dict.get('diagnosis_codes')):
