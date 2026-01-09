@@ -37,6 +37,21 @@ async def lifespan(app: FastAPI):
     logger.info("API documentation available at /api/docs")
     logger.info(f"Logging level: {os.getenv('LOG_LEVEL', 'INFO')}")
     logger.info(f"JSON logs: {os.getenv('JSON_LOGS', 'false')}")
+    
+    # Initialize database schema on startup to ensure consistency
+    try:
+        from src.dashboard.api.dependencies import get_storage_adapter
+        storage = get_storage_adapter()
+        init_result = storage.initialize_schema()
+        if init_result.is_success():
+            logger.info("Database schema initialized successfully")
+        else:
+            logger.error(f"Failed to initialize database schema: {init_result.error}")
+            # Don't fail startup, but log the error - schema might already exist
+    except Exception as e:
+        logger.error(f"Error during database schema initialization: {str(e)}", exc_info=True)
+        # Don't fail startup - schema might already exist or connection might be delayed
+    
     yield
     # Shutdown
     logger.info("Data-Dialysis Dashboard API shutting down...")

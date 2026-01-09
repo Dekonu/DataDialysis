@@ -110,6 +110,12 @@ class PerformanceMetricsService:
             ThroughputMetrics: Throughput statistics
         """
         try:
+            # Ensure schema is initialized before querying
+            init_result = self.storage.initialize_schema()
+            if not init_result.is_success():
+                logger.warning(f"Schema initialization failed, returning default metrics: {init_result.error}")
+                return ThroughputMetrics(records_per_second=0.0)
+            
             if not hasattr(self.storage, '_get_connection'):
                 return ThroughputMetrics(records_per_second=0.0)
             
@@ -238,6 +244,17 @@ class PerformanceMetricsService:
             LatencyMetrics: Latency statistics
         """
         try:
+            # Ensure schema is initialized before querying
+            init_result = self.storage.initialize_schema()
+            if not init_result.is_success():
+                logger.warning(f"Schema initialization failed, returning default metrics: {init_result.error}")
+                return LatencyMetrics(
+                    avg_processing_time_ms=None,
+                    p50_ms=None,
+                    p95_ms=None,
+                    p99_ms=None
+                )
+            
             if not hasattr(self.storage, '_get_connection'):
                 return LatencyMetrics(
                     avg_processing_time_ms=None,
@@ -339,6 +356,12 @@ class PerformanceMetricsService:
             FileProcessingMetrics: File processing statistics
         """
         try:
+            # Ensure schema is initialized before querying
+            init_result = self.storage.initialize_schema()
+            if not init_result.is_success():
+                logger.warning(f"Schema initialization failed, returning default metrics: {init_result.error}")
+                return FileProcessingMetrics(total_files=0)
+            
             if not hasattr(self.storage, '_get_connection'):
                 return FileProcessingMetrics(total_files=0)
             
