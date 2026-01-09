@@ -72,6 +72,12 @@ for origin in default_origins:
     if origin not in cors_origins:
         cors_origins.append(origin)
 
+# For EC2/cloud deployments: allow all origins if CORS_ALLOW_ALL is set
+# This is less secure but useful for development/testing
+if os.getenv("CORS_ALLOW_ALL", "false").lower() == "true":
+    cors_origins = ["*"]
+    logger.warning("CORS_ALLOW_ALL is enabled - allowing all origins (not recommended for production)")
+
 logger.info(f"CORS allowed origins: {cors_origins}")
 
 app.add_middleware(
