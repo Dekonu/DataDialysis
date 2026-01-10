@@ -12,11 +12,20 @@ import type {
   CircuitBreakerStatus,
 } from '@/types/api';
 
+// Extend Window interface for runtime configuration
+interface WindowWithConfig extends Window {
+  __API_URL__?: string;
+  __WS_URL__?: string;
+}
+
 // Determine WebSocket URL based on API URL
 const getWebSocketUrl = (): string => {
   // Runtime configuration (set via window object)
-  if (typeof window !== 'undefined' && (window as any).__WS_URL__) {
-    return (window as any).__WS_URL__;
+  if (typeof window !== 'undefined') {
+    const win = window as WindowWithConfig;
+    if (win.__WS_URL__) {
+      return win.__WS_URL__;
+    }
   }
   
   // Build-time configuration

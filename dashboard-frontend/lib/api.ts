@@ -11,12 +11,21 @@ import type {
   RecordChangeHistoryResponse,
 } from '@/types/api';
 
+// Extend Window interface for runtime configuration
+interface WindowWithConfig extends Window {
+  __API_URL__?: string;
+  __WS_URL__?: string;
+}
+
 // Get API URL at runtime - works for both build-time and runtime configuration
 // Priority: window.__API_URL__ (runtime) > NEXT_PUBLIC_API_URL (build-time) > default
 function getApiBaseUrl(): string {
   // Runtime configuration (set via window object or script tag)
-  if (typeof window !== 'undefined' && (window as any).__API_URL__) {
-    return (window as any).__API_URL__;
+  if (typeof window !== 'undefined') {
+    const win = window as WindowWithConfig;
+    if (win.__API_URL__) {
+      return win.__API_URL__;
+    }
   }
   
   // Build-time configuration
