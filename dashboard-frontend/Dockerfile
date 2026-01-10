@@ -33,10 +33,16 @@ ENV NODE_ENV=production
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 ENV NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL}
 
-# Build application with cache mount
-RUN --mount=type=cache,target=/app/.next/cache,sharing=locked \
-    npm run build \
-    && rm -rf node_modules .next/cache
+# Increase Node.js memory limit for build (helps with large builds)
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+
+# Build application
+# Use cache mount only for npm cache, not for .next/cache (can cause build issues)
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm run build 2>&1 | tee /tmp/build.log || (cat /tmp/build.log && exit 1)
+
+# Clean up after successful build
+RUN rm -rf node_modules
 
 # Stage 3: Runner
 FROM node:20-alpine AS runner
