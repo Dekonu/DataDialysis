@@ -270,8 +270,10 @@ class TestXMLStreamingFunctionality:
         
         # Verify records are valid
         for result in success_results:
-            assert isinstance(result.value, GoldenRecord)
-            assert result.value.patient.patient_id is not None
+            # Unpack tuple: (GoldenRecord, original_record_data)
+            golden_record, _ = result.value
+            assert isinstance(golden_record, GoldenRecord)
+            assert golden_record.patient.patient_id is not None
     
     def test_streaming_mode_redacts_pii(self, small_xml_file, xml_config_file):
         """Test that streaming mode correctly redacts PII."""
@@ -292,7 +294,9 @@ class TestXMLStreamingFunctionality:
         # Check PII redaction
         for result in results:
             if result.is_success():
-                patient = result.value.patient
+                # Unpack tuple: (GoldenRecord, original_record_data)
+                golden_record, _ = result.value
+                patient = golden_record.patient
                 # PII should be redacted
                 assert patient.first_name == "[REDACTED]" or patient.first_name is None
                 assert patient.date_of_birth is None  # DOB always redacted

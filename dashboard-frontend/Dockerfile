@@ -1,4 +1,5 @@
-# Multi-stage build for Next.js frontend
+# Optimized multi-stage build for Next.js frontend with BuildKit cache mounts
+# syntax=docker/dockerfile:1.4
 # Stage 1: Dependencies
 FROM node:20-alpine AS deps
 
@@ -7,8 +8,9 @@ WORKDIR /app
 # Copy package files
 COPY package.json package-lock.json* ./
 
-# Install dependencies
-RUN npm ci
+# Install dependencies with cache mount (reduces rebuild time and space)
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci --prefer-offline --no-audit
 
 # Stage 2: Builder
 FROM node:20-alpine AS builder
@@ -21,12 +23,26 @@ COPY --from=deps /app/node_modules ./node_modules
 # Copy source code
 COPY . .
 
+# Accept build arguments for API URLs (required for EC2 deployments)
+ARG NEXT_PUBLIC_API_URL=http://api:8000
+ARG NEXT_PUBLIC_WS_URL=ws://api:8000
+
 # Set environment variables for build
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+ENV NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL}
+
+# Increase Node.js memory limit for build (helps with large builds)
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 
 # Build application
-RUN npm run build
+# Use cache mount only for npm cache, not for .next/cache (can cause build issues)
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm run build 2>&1 | tee /tmp/build.log || (cat /tmp/build.log && exit 1)
+
+# Clean up after successful build
+RUN rm -rf node_modules
 
 # Stage 3: Runner
 FROM node:20-alpine AS runner
@@ -40,13 +56,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
-# Copy necessary files
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-
-# Set ownership
-RUN chown -R nextjs:nodejs /app
+# Copy only necessary files from builder
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 USER nextjs
 

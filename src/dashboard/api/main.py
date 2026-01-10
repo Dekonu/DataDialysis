@@ -17,7 +17,8 @@ from src.dashboard.api.routes import (
     metrics,
     audit,
     circuit_breaker,
-    websocket
+    websocket,
+    change_history,
 )
 
 # Configure structured logging
@@ -36,6 +37,21 @@ async def lifespan(app: FastAPI):
     logger.info("API documentation available at /api/docs")
     logger.info(f"Logging level: {os.getenv('LOG_LEVEL', 'INFO')}")
     logger.info(f"JSON logs: {os.getenv('JSON_LOGS', 'false')}")
+    
+    # Initialize database schema on startup to ensure consistency
+    try:
+        from src.dashboard.api.dependencies import get_storage_adapter
+        storage = get_storage_adapter()
+        init_result = storage.initialize_schema()
+        if init_result.is_success():
+            logger.info("Database schema initialized successfully")
+        else:
+            logger.error(f"Failed to initialize database schema: {init_result.error}")
+            # Don't fail startup, but log the error - schema might already exist
+    except Exception as e:
+        logger.error(f"Error during database schema initialization: {str(e)}", exc_info=True)
+        # Don't fail startup - schema might already exist or connection might be delayed
+    
     yield
     # Shutdown
     logger.info("Data-Dialysis Dashboard API shutting down...")
@@ -53,15 +69,35 @@ app = FastAPI(
 )
 
 # CORS configuration
-# In production, replace with specific origins
+# Read allowed origins from environment variable (comma-separated)
+# Defaults to localhost for development
+cors_origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+cors_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
+
+# Add default localhost origins if not already present
+default_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+]
+
+# Merge defaults with environment-provided origins (avoid duplicates)
+for origin in default_origins:
+    if origin not in cors_origins:
+        cors_origins.append(origin)
+
+# For EC2/cloud deployments: allow all origins if CORS_ALLOW_ALL is set
+# This is less secure but useful for development/testing
+if os.getenv("CORS_ALLOW_ALL", "false").lower() == "true":
+    cors_origins = ["*"]
+    logger.warning("CORS_ALLOW_ALL is enabled - allowing all origins (not recommended for production)")
+
+logger.info(f"CORS allowed origins: {cors_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # Next.js dev server
-        "http://localhost:3001",  # Alternative port
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-    ],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -77,6 +113,8 @@ app.include_router(metrics.router)
 app.include_router(audit.router)
 app.include_router(circuit_breaker.router)
 app.include_router(websocket.router)
+app.include_router(change_history.router)
+app.include_router(change_history.router)
 
 
 @app.get("/")

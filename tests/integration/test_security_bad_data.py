@@ -121,7 +121,9 @@ class TestXSSAttacks:
         assert len(success_results) > 0
         
         for result in success_results:
-            patient = result.value.patient
+            # Unpack tuple: (GoldenRecord, original_record_data)
+            golden_record, _ = result.value
+            patient = golden_record.patient
             # XSS should be redacted, not executed
             assert patient.family_name == "[REDACTED]"
             assert len(patient.given_names) > 0
@@ -138,7 +140,9 @@ class TestXSSAttacks:
         assert len(success_results) > 0
         
         for result in success_results:
-            patient = result.value.patient
+            # Unpack tuple: (GoldenRecord, original_record_data)
+            golden_record, _ = result.value
+            patient = golden_record.patient
             # Phone and email should be redacted (XSS neutralized)
             if patient.phone:
                 assert "<img" not in patient.phone.lower()
@@ -156,7 +160,8 @@ class TestXSSAttacks:
         assert len(success_results) > 0
         
         for result in success_results:
-            df = result.value
+            # Unpack tuple: (redacted_df, raw_df)
+            df, _ = result.value
             # Check that XSS payloads are redacted in given_names (list field)
             if 'given_names' in df.columns:
                 names_series = df['given_names'].dropna()
@@ -272,7 +277,9 @@ class TestXMLBombs:
             if success_results:
                 # Verify entities weren't expanded (they should be literal &lol9;)
                 for result in success_results:
-                    patient = result.value.patient
+                    # Unpack tuple: (GoldenRecord, original_record_data)
+                    golden_record, _ = result.value
+                    patient = golden_record.patient
                     # Entity should not be expanded to billions of "lol" characters
                     if patient.family_name:
                         assert len(patient.family_name) < 1000  # Should be small if not expanded
@@ -299,7 +306,9 @@ class TestXMLBombs:
             # With resolve_entities=False, entities won't expand, so might process but safely
             if success_results:
                 for result in success_results:
-                    patient = result.value.patient
+                    # Unpack tuple: (GoldenRecord, original_record_data)
+                    golden_record, _ = result.value
+                    patient = golden_record.patient
                     # Entity should not be expanded to huge size
                     if patient.family_name:
                         assert len(patient.family_name) < 10000  # Should be reasonable size
@@ -369,7 +378,9 @@ class TestPIILeakageAttempts:
         assert len(success_results) > 0
         
         for result in success_results:
-            patient = result.value.patient
+            # Unpack tuple: (GoldenRecord, original_record_data)
+            golden_record, _ = result.value
+            patient = golden_record.patient
             
             # All PII should be redacted
             assert patient.family_name == "[REDACTED]"
@@ -389,7 +400,9 @@ class TestPIILeakageAttempts:
         assert len(success_results) > 0
         
         for result in success_results:
-            observations = result.value.observations
+            # Unpack tuple: (GoldenRecord, original_record_data)
+            golden_record, _ = result.value
+            observations = golden_record.observations
             if observations:
                 for obs in observations:
                     if obs.notes:
@@ -408,7 +421,8 @@ class TestPIILeakageAttempts:
         assert len(success_results) > 0
         
         for result in success_results:
-            df = result.value
+            # Unpack tuple: (redacted_df, raw_df)
+            df, _ = result.value
             if 'identifiers' in df.columns:
                 identifiers = df['identifiers'].dropna()
                 for identifier_list in identifiers:
@@ -455,7 +469,9 @@ class TestSQLInjectionAttempts:
         if success_results:
             for result in success_results:
                 # MRN should be validated and invalid format rejected
-                patient = result.value.patient
+                # Unpack tuple: (GoldenRecord, original_record_data)
+                golden_record, _ = result.value
+                patient = golden_record.patient
                 assert "'" not in patient.patient_id
                 assert "OR" not in patient.patient_id.upper()
         else:
@@ -470,7 +486,9 @@ class TestSQLInjectionAttempts:
         success_results = [r for r in results if r.is_success()]
         if success_results:
             for result in success_results:
-                patient = result.value.patient
+                # Unpack tuple: (GoldenRecord, original_record_data)
+                golden_record, _ = result.value
+                patient = golden_record.patient
                 # Name should be redacted, SQL injection neutralized
                 assert patient.family_name == "[REDACTED]"
                 # Verify no SQL keywords in output

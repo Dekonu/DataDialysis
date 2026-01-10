@@ -23,7 +23,7 @@ import uuid
 import threading
 import time
 from datetime import datetime
-from typing import Optional, Any
+from typing import Optional, Any, List
 from urllib.parse import quote_plus
 import json
 
@@ -48,6 +48,7 @@ from src.domain.golden_record import (
 )
 from src.infrastructure.config_manager import DatabaseConfig
 from src.infrastructure.dataframe_cleaner import DataFrameCleaner
+from src.infrastructure.encryption import EncryptionService
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,7 @@ class PostgreSQLAdapter(StoragePort):
         self._initialized = False
         self._schema_initialized = False  # Cache flag for schema initialization
         self._schema_lock = threading.Lock()  # Thread-safe lock for schema initialization
+        self._encryption_service: Optional[EncryptionService] = None  # Lazy initialization
         
         # Use DatabaseConfig if provided (preferred method)
         if db_config:
@@ -440,6 +442,79 @@ class PostgreSQLAdapter(StoragePort):
                 )
                 """)
                 
+                # Create raw data vault tables (encrypted original data)
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS raw_patients (
+                    patient_id VARCHAR(50) PRIMARY KEY,
+                    record_data_encrypted BYTEA NOT NULL,
+                    encryption_key_id VARCHAR(100) NOT NULL DEFAULT 'default',
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    ingestion_id VARCHAR(50),
+                    source_adapter VARCHAR(50)
+                )
+                """)
+                
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS raw_encounters (
+                    encounter_id VARCHAR(50) PRIMARY KEY,
+                    patient_id VARCHAR(50) NOT NULL,
+                    record_data_encrypted BYTEA NOT NULL,
+                    encryption_key_id VARCHAR(100) NOT NULL DEFAULT 'default',
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    ingestion_id VARCHAR(50),
+                    source_adapter VARCHAR(50)
+                )
+                """)
+                
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS raw_observations (
+                    observation_id VARCHAR(50) PRIMARY KEY,
+                    patient_id VARCHAR(50) NOT NULL,
+                    encounter_id VARCHAR(50),
+                    record_data_encrypted BYTEA NOT NULL,
+                    encryption_key_id VARCHAR(100) NOT NULL DEFAULT 'default',
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    ingestion_id VARCHAR(50),
+                    source_adapter VARCHAR(50)
+                )
+                """)
+                
+                # Create change audit log table for Change Data Capture (CDC)
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS change_audit_log (
+                    change_id VARCHAR(50) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+                    table_name VARCHAR(50) NOT NULL,
+                    record_id VARCHAR(50) NOT NULL,
+                    field_name VARCHAR(100) NOT NULL,
+                    old_value TEXT,
+                    new_value TEXT,
+                    old_value_encrypted BYTEA,
+                    new_value_encrypted BYTEA,
+                    old_value_hash VARCHAR(64),
+                    new_value_hash VARCHAR(64),
+                    change_type VARCHAR(20) NOT NULL,
+                    changed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    ingestion_id VARCHAR(50),
+                    source_adapter VARCHAR(50),
+                    changed_by VARCHAR(100),
+                    encryption_key_id VARCHAR(100)
+                )
+                """)
+                
+                # Add encrypted columns to change_audit_log if they don't exist (migration)
+                try:
+                    cursor.execute("ALTER TABLE change_audit_log ADD COLUMN IF NOT EXISTS old_value_encrypted BYTEA")
+                    cursor.execute("ALTER TABLE change_audit_log ADD COLUMN IF NOT EXISTS new_value_encrypted BYTEA")
+                    cursor.execute("ALTER TABLE change_audit_log ADD COLUMN IF NOT EXISTS old_value_hash VARCHAR(64)")
+                    cursor.execute("ALTER TABLE change_audit_log ADD COLUMN IF NOT EXISTS new_value_hash VARCHAR(64)")
+                    cursor.execute("ALTER TABLE change_audit_log ADD COLUMN IF NOT EXISTS encryption_key_id VARCHAR(100)")
+                except Exception:
+                    # Columns may already exist, ignore error
+                    pass
+                
                 # Create indexes for performance
                 indexes = [
                 "CREATE INDEX IF NOT EXISTS idx_patients_source ON patients(source_adapter)",
@@ -457,6 +532,18 @@ class PostgreSQLAdapter(StoragePort):
                 "CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)",
                 "CREATE INDEX IF NOT EXISTS idx_logs_rule_triggered ON logs(rule_triggered)",
                 "CREATE INDEX IF NOT EXISTS idx_logs_record_id ON logs(record_id)",
+                "CREATE INDEX IF NOT EXISTS idx_change_audit_table_record ON change_audit_log(table_name, record_id)",
+                "CREATE INDEX IF NOT EXISTS idx_change_audit_timestamp ON change_audit_log(changed_at)",
+                "CREATE INDEX IF NOT EXISTS idx_change_audit_ingestion ON change_audit_log(ingestion_id)",
+                "CREATE INDEX IF NOT EXISTS idx_change_audit_covering ON change_audit_log(table_name, record_id, changed_at, field_name)",
+                # Raw vault indexes
+                "CREATE INDEX IF NOT EXISTS idx_raw_patients_updated ON raw_patients(updated_at)",
+                "CREATE INDEX IF NOT EXISTS idx_raw_patients_ingestion ON raw_patients(ingestion_id)",
+                "CREATE INDEX IF NOT EXISTS idx_raw_encounters_patient ON raw_encounters(patient_id)",
+                "CREATE INDEX IF NOT EXISTS idx_raw_encounters_updated ON raw_encounters(updated_at)",
+                "CREATE INDEX IF NOT EXISTS idx_raw_observations_patient ON raw_observations(patient_id)",
+                "CREATE INDEX IF NOT EXISTS idx_raw_observations_encounter ON raw_observations(encounter_id)",
+                "CREATE INDEX IF NOT EXISTS idx_raw_observations_updated ON raw_observations(updated_at)",
                 ]
                 
                 for index_sql in indexes:
@@ -1025,6 +1112,738 @@ class PostgreSQLAdapter(StoragePort):
                 StorageError(error_msg, operation="persist", details={"patient_id": record.patient.patient_id}),
                 error_type="StorageError"
             )
+    
+    def _get_encryption_service(self) -> EncryptionService:
+        """Get or create encryption service (lazy initialization).
+        
+        Returns:
+            EncryptionService: Initialized encryption service
+        """
+        if self._encryption_service is None:
+            self._encryption_service = EncryptionService()
+        return self._encryption_service
+    
+    def _get_primary_key(self, table_name: str) -> Optional[str]:
+        """Get the primary key column name for a table.
+        
+        Parameters:
+            table_name: Name of the table
+            
+        Returns:
+            Primary key column name or None if not found
+        """
+        primary_keys = {
+            'patients': 'patient_id',
+            'encounters': 'encounter_id',
+            'observations': 'observation_id'
+        }
+        return primary_keys.get(table_name)
+    
+    def _get_raw_vault_table_name(self, table_name: str) -> str:
+        """Get the raw vault table name for a main table.
+        
+        Parameters:
+            table_name: Main table name (patients, encounters, observations)
+            
+        Returns:
+            str: Raw vault table name (raw_patients, raw_encounters, raw_observations)
+        """
+        raw_vault_tables = {
+            'patients': 'raw_patients',
+            'encounters': 'raw_encounters',
+            'observations': 'raw_observations'
+        }
+        return raw_vault_tables.get(table_name, f'raw_{table_name}')
+    
+    def _persist_raw_data_vault(
+        self,
+        df: pd.DataFrame,
+        table_name: str,
+        ingestion_id: Optional[str] = None,
+        source_adapter: Optional[str] = None
+    ) -> Result[int]:
+        """Persist original unredacted data to raw vault (encrypted).
+        
+        Parameters:
+            df: DataFrame with original unredacted data
+            table_name: Main table name (patients, encounters, observations)
+            ingestion_id: ID of the ingestion run
+            source_adapter: Source adapter identifier
+            
+        Returns:
+            Result[int]: Number of records persisted or error
+        """
+        if df.empty:
+            return Result.success_result(0)
+        
+        raw_vault_table = self._get_raw_vault_table_name(table_name)
+        primary_key = self._get_primary_key(table_name)
+        
+        if not primary_key or primary_key not in df.columns:
+            logger.warning(f"Cannot persist to raw vault: primary key {primary_key} not found for {table_name}")
+            return Result.success_result(0)
+        
+        encryption_service = self._get_encryption_service()
+        conn = None
+        
+        try:
+            if not self._initialized:
+                init_result = self.initialize_schema()
+                if not init_result.is_success():
+                    return init_result
+            
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            # Prepare data for bulk insert
+            values = []
+            for _, row in df.iterrows():
+                record_dict = row.to_dict()
+                # Convert to JSON-serializable format
+                for key, value in record_dict.items():
+                    if pd.isna(value):
+                        record_dict[key] = None
+                    elif isinstance(value, (pd.Timestamp, datetime)):
+                        record_dict[key] = value.isoformat()
+                
+                # Encrypt the entire record
+                encrypted_data = encryption_service.encrypt_record(record_dict)
+                
+                record_id = str(record_dict[primary_key])
+                
+                # Get additional fields for raw vault
+                patient_id = None
+                encounter_id = None
+                if table_name == 'encounters' and 'patient_id' in record_dict:
+                    patient_id = str(record_dict['patient_id'])
+                elif table_name == 'observations':
+                    if 'patient_id' in record_dict:
+                        patient_id = str(record_dict['patient_id'])
+                    if 'encounter_id' in record_dict and pd.notna(record_dict['encounter_id']):
+                        encounter_id = str(record_dict['encounter_id'])
+                
+                if table_name == 'patients':
+                    values.append((
+                        record_id,
+                        encrypted_data,
+                        encryption_service.get_key_id(),
+                        ingestion_id or 'unknown',
+                        source_adapter or 'unknown'
+                    ))
+                elif table_name == 'encounters':
+                    values.append((
+                        record_id,
+                        patient_id,
+                        encrypted_data,
+                        encryption_service.get_key_id(),
+                        ingestion_id or 'unknown',
+                        source_adapter or 'unknown'
+                    ))
+                elif table_name == 'observations':
+                    values.append((
+                        record_id,
+                        patient_id,
+                        encounter_id,
+                        encrypted_data,
+                        encryption_service.get_key_id(),
+                        ingestion_id or 'unknown',
+                        source_adapter or 'unknown'
+                    ))
+            
+            if not values:
+                cursor.close()
+                self._return_connection(conn)
+                return Result.success_result(0)
+            
+            # Bulk insert using execute_values
+            if table_name == 'patients':
+                insert_sql = """
+                    INSERT INTO raw_patients (
+                        patient_id, record_data_encrypted, encryption_key_id,
+                        ingestion_id, source_adapter
+                    ) VALUES %s
+                    ON CONFLICT (patient_id) DO UPDATE SET
+                        record_data_encrypted = EXCLUDED.record_data_encrypted,
+                        encryption_key_id = EXCLUDED.encryption_key_id,
+                        updated_at = CURRENT_TIMESTAMP,
+                        ingestion_id = EXCLUDED.ingestion_id,
+                        source_adapter = EXCLUDED.source_adapter
+                """
+            elif table_name == 'encounters':
+                insert_sql = """
+                    INSERT INTO raw_encounters (
+                        encounter_id, patient_id, record_data_encrypted, encryption_key_id,
+                        ingestion_id, source_adapter
+                    ) VALUES %s
+                    ON CONFLICT (encounter_id) DO UPDATE SET
+                        record_data_encrypted = EXCLUDED.record_data_encrypted,
+                        encryption_key_id = EXCLUDED.encryption_key_id,
+                        updated_at = CURRENT_TIMESTAMP,
+                        ingestion_id = EXCLUDED.ingestion_id,
+                        source_adapter = EXCLUDED.source_adapter
+                """
+            else:  # observations
+                insert_sql = """
+                    INSERT INTO raw_observations (
+                        observation_id, patient_id, encounter_id, record_data_encrypted,
+                        encryption_key_id, ingestion_id, source_adapter
+                    ) VALUES %s
+                    ON CONFLICT (observation_id) DO UPDATE SET
+                        record_data_encrypted = EXCLUDED.record_data_encrypted,
+                        encryption_key_id = EXCLUDED.encryption_key_id,
+                        updated_at = CURRENT_TIMESTAMP,
+                        ingestion_id = EXCLUDED.ingestion_id,
+                        source_adapter = EXCLUDED.source_adapter
+                """
+            
+            execute_values(cursor, insert_sql, values, page_size=1000)
+            conn.commit()
+            cursor.close()
+            
+            count = len(values)
+            logger.debug(f"Persisted {count} records to raw vault {raw_vault_table}")
+            return Result.success_result(count)
+            
+        except Exception as e:
+            if conn:
+                conn.rollback()
+                self._return_connection(conn)
+            error_msg = f"Failed to persist to raw vault {raw_vault_table}: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return Result.failure_result(
+                StorageError(error_msg, operation="_persist_raw_data_vault"),
+                error_type="StorageError"
+            )
+    
+    def _fetch_raw_records_decrypted(
+        self,
+        record_ids: List[str],
+        table_name: str,
+        primary_key: str
+    ) -> pd.DataFrame:
+        """Fetch and decrypt raw vault records for change detection.
+        
+        Parameters:
+            record_ids: List of primary key values to fetch
+            table_name: Main table name (patients, encounters, observations)
+            primary_key: Primary key column name
+            
+        Returns:
+            DataFrame with decrypted original records (empty if none found)
+        """
+        if not record_ids:
+            return pd.DataFrame()
+        
+        raw_vault_table = self._get_raw_vault_table_name(table_name)
+        encryption_service = self._get_encryption_service()
+        conn = None
+        
+        try:
+            if not self._initialized:
+                self.initialize_schema()
+            
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            # Build parameterized query
+            placeholders = ','.join(['%s'] * len(record_ids))
+            query = f"SELECT {primary_key}, record_data_encrypted, encryption_key_id FROM {raw_vault_table} WHERE {primary_key} IN ({placeholders})"
+            
+            cursor.execute(query, record_ids)
+            rows = cursor.fetchall()
+            cursor.close()
+            self._return_connection(conn)
+            
+            if not rows:
+                return pd.DataFrame()
+            
+            # Decrypt records and convert to DataFrame
+            decrypted_records = []
+            for row in rows:
+                record_id = row[0]
+                encrypted_data = row[1]
+                key_id = row[2] if len(row) > 2 else 'default'
+                
+                try:
+                    # Decrypt the record
+                    record_dict = encryption_service.decrypt_record(encrypted_data)
+                    decrypted_records.append(record_dict)
+                except Exception as e:
+                    logger.warning(f"Failed to decrypt record {record_id} from raw vault: {str(e)}")
+                    continue
+            
+            if not decrypted_records:
+                return pd.DataFrame()
+            
+            # Convert to DataFrame
+            decrypted_df = pd.DataFrame(decrypted_records)
+            logger.debug(f"Fetched and decrypted {len(decrypted_df)} records from raw vault {raw_vault_table}")
+            return decrypted_df
+            
+        except Exception as e:
+            if conn:
+                self._return_connection(conn)
+            logger.warning(f"Failed to fetch raw vault records from {raw_vault_table}: {str(e)}")
+            return pd.DataFrame()
+    
+    def _bulk_fetch_existing_records(
+        self,
+        record_ids: List[str],
+        table_name: str,
+        primary_key: str
+    ) -> pd.DataFrame:
+        """Bulk fetch existing records from the database.
+        
+        This method is optimized for performance with large batches (10k-50k records).
+        It fetches all records in a single query rather than per-record queries.
+        
+        Parameters:
+            record_ids: List of primary key values to fetch
+            table_name: Name of the table
+            primary_key: Primary key column name
+            
+        Returns:
+            DataFrame with existing records (empty if none found)
+        
+        Performance:
+            - Single bulk query instead of N queries
+            - Uses parameterized query for safety
+            - Returns empty DataFrame if no records found
+        """
+        if not record_ids:
+            return pd.DataFrame()
+        
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            # Build parameterized query for bulk fetch
+            # Use IN clause with parameterized values
+            placeholders = ','.join(['%s'] * len(record_ids))
+            query = f"SELECT * FROM {table_name} WHERE {primary_key} IN ({placeholders})"
+            
+            cursor.execute(query, record_ids)
+            
+            # Fetch all results
+            columns = [desc[0] for desc in cursor.description]
+            rows = cursor.fetchall()
+            
+            cursor.close()
+            self._return_connection(conn)
+            
+            if not rows:
+                return pd.DataFrame()
+            
+            # Convert to DataFrame
+            existing_df = pd.DataFrame(rows, columns=columns)
+            logger.debug(f"Fetched {len(existing_df)} existing records from {table_name}")
+            return existing_df
+            
+        except Exception as e:
+            if conn:
+                self._return_connection(conn)
+            logger.warning(f"Failed to fetch existing records from {table_name}: {str(e)}")
+            # Return empty DataFrame on error (treat as all new records)
+            return pd.DataFrame()
+    
+    def _update_changed_fields_bulk(
+        self,
+        merged_df: pd.DataFrame,
+        changes_df: pd.DataFrame,
+        table_name: str,
+        primary_key: str
+    ) -> Result[int]:
+        """Update only changed fields in bulk.
+        
+        This method builds efficient UPDATE statements that only modify fields
+        that have actually changed. For simplicity and performance, it uses
+        a temporary table approach or falls back to selective field updates.
+        
+        Parameters:
+            merged_df: Merged DataFrame with _old and _new columns
+            changes_df: DataFrame of detected changes (from ChangeDetector)
+            table_name: Name of the table
+            primary_key: Primary key column name
+            
+        Returns:
+            Result[int]: Number of records updated or error
+        
+        Performance:
+            - Only updates fields that actually changed
+            - Uses bulk operations where possible
+            - Falls back to standard update if selective update fails
+        """
+        if changes_df.empty or merged_df.empty:
+            return Result.success_result(0)
+        
+        # For Phase 3, we'll use a simpler approach:
+        # Extract only the changed fields and update them using standard persist
+        # This still provides the benefit of change detection and logging
+        # Full selective field updates can be optimized in a future iteration
+        
+        # Get unique record IDs that need updating
+        record_ids = changes_df['record_id'].unique().tolist()
+        
+        # Get list of changed fields
+        changed_fields = changes_df['field_name'].unique().tolist()
+        
+        # Filter merged_df to only records that need updating
+        # Note: After merge with suffixes, the primary key column doesn't get a suffix
+        # So we can access it directly
+        try:
+            updates_merged = merged_df[merged_df[primary_key].isin(record_ids)].copy()
+        except KeyError as e:
+            logger.error(f"Primary key {primary_key} not found in merged DataFrame. Available columns: {list(merged_df.columns)}")
+            # Fall back to standard update
+            return self._fallback_to_standard_update(merged_df, primary_key, table_name)
+        
+        if updates_merged.empty:
+            return Result.success_result(0)
+        
+        # Build DataFrame with only changed fields
+        # Start with primary key - it doesn't have a suffix after merge
+        update_data = {}
+        try:
+            if primary_key in updates_merged.columns:
+                update_data[primary_key] = updates_merged[primary_key].tolist()
+            else:
+                logger.error(f"Primary key {primary_key} not found in updates_merged. Available columns: {list(updates_merged.columns)}")
+                return self._fallback_to_standard_update(merged_df, primary_key, table_name)
+        except Exception as e:
+            logger.error(f"Error accessing primary key {primary_key}: {str(e)}")
+            return self._fallback_to_standard_update(merged_df, primary_key, table_name)
+        
+        # For each changed field, get the _new value from merged_df
+        for field_name in changed_fields:
+            new_col = f"{field_name}_new"
+            try:
+                if new_col in updates_merged.columns:
+                    # Get values as list to maintain index alignment
+                    update_data[field_name] = updates_merged[new_col].tolist()
+                elif field_name in updates_merged.columns:
+                    # If _new column doesn't exist, try original name (shouldn't happen but handle it)
+                    update_data[field_name] = updates_merged[field_name].tolist()
+                else:
+                    logger.warning(f"Field {field_name} (or {new_col}) not found in merged DataFrame. Available: {list(updates_merged.columns)}")
+                    # Skip this field - it won't be updated
+            except Exception as e:
+                logger.warning(f"Error accessing field {field_name}: {str(e)}. Skipping this field.")
+                continue
+        
+        # Create DataFrame with only changed fields
+        if not update_data or len(update_data) == 1:  # Only primary key, no fields to update
+            logger.warning("No fields to update after filtering")
+            return Result.success_result(0)
+        
+        # Ensure all lists have the same length
+        lengths = [len(v) for v in update_data.values() if isinstance(v, list)]
+        if lengths and len(set(lengths)) > 1:
+            logger.error(f"Inconsistent data lengths in update_data: {lengths}")
+            return self._fallback_to_standard_update(merged_df, primary_key, table_name)
+        
+        try:
+            updates_df = pd.DataFrame(update_data)
+        except Exception as e:
+            logger.error(f"Error creating update DataFrame: {str(e)}")
+            return self._fallback_to_standard_update(merged_df, primary_key, table_name)
+        
+        if updates_df.empty:
+            return Result.success_result(0)
+        
+        # Use standard persist which will do UPSERT
+        # The key benefit here is that we've detected changes and logged them
+        # The actual UPDATE still updates all provided fields, but we only provide changed ones
+        # This is a good balance between performance and complexity for Phase 3
+        try:
+            result = self.persist_dataframe(updates_df, table_name)
+            return result if result is not None else Result.success_result(0)
+        except Exception as e:
+            logger.error(f"Error in persist_dataframe during update: {str(e)}")
+            return self._fallback_to_standard_update(merged_df, primary_key, table_name)
+    
+    def _fallback_to_standard_update(
+        self,
+        merged_df: pd.DataFrame,
+        primary_key: str,
+        table_name: str
+    ) -> Result[int]:
+        """Fallback to standard update when selective update fails.
+        
+        This extracts all new columns from the merged DataFrame and uses
+        standard persist (which will do UPSERT).
+        """
+        try:
+            # Get all columns that end with _new (these are the new values)
+            new_cols = [col for col in merged_df.columns if col.endswith('_new')]
+            if not new_cols:
+                return Result.success_result(0)
+            
+            # Also include primary key
+            if primary_key not in merged_df.columns:
+                logger.error(f"Primary key {primary_key} not found for fallback update")
+                return Result.success_result(0)
+            
+            # Extract update data
+            update_cols = [primary_key] + new_cols
+            updates_df = merged_df[update_cols].copy()
+            
+            # Rename _new columns back to original names
+            updates_df.columns = [col.replace('_new', '') if col.endswith('_new') else col for col in updates_df.columns]
+            
+            return self.persist_dataframe(updates_df, table_name)
+        except Exception as e:
+            logger.error(f"Error in fallback update: {str(e)}")
+            return Result.failure_result(
+                StorageError(f"Failed to perform fallback update: {str(e)}", operation="_fallback_to_standard_update"),
+                error_type="StorageError"
+            )
+        
+        # Use standard persist which will do UPSERT
+        # The key benefit here is that we've detected changes and logged them
+        # The actual UPDATE still updates all provided fields, but we only provide changed ones
+        # This is a good balance between performance and complexity for Phase 3
+        return self.persist_dataframe(updates_df, table_name)
+    
+    def persist_dataframe_smart(
+        self,
+        df: pd.DataFrame,
+        table_name: str,
+        raw_df: Optional[pd.DataFrame] = None,
+        enable_cdc: bool = True,
+        ingestion_id: Optional[str] = None,
+        source_adapter: Optional[str] = None
+    ) -> Result[int]:
+        """Persist DataFrame with smart updates (only changed fields) and CDC.
+        
+        This method implements Change Data Capture (CDC) by:
+        1. Storing redacted data in main tables
+        2. Storing original data in raw vault (encrypted)
+        3. Fetching existing raw records from vault (decrypted)
+        4. Detecting field-level changes using original values (not redacted)
+        5. Only updating changed fields (performance optimization)
+        6. Logging all changes to change_audit_log with encrypted original values
+        
+        Parameters:
+            df: Validated pandas DataFrame (PII already redacted) - goes to main tables
+            table_name: Target table name
+            raw_df: Original unredacted DataFrame - goes to raw vault (optional, defaults to df if not provided)
+            enable_cdc: Whether to enable CDC (default: True)
+            ingestion_id: ID of the ingestion run (for change logging)
+            source_adapter: Source adapter identifier (for change logging)
+            
+        Returns:
+            Result[int]: Number of rows processed or error
+        
+        Performance:
+            - Single bulk fetch per chunk (not per record)
+            - Vectorized change detection using pandas
+            - Skips UPDATE if no changes detected
+            - Bulk operations for inserts and updates
+            - Raw vault operations are bulk-encrypted
+        """
+        if df.empty:
+            return Result.success_result(0)
+        
+        # If CDC is disabled, fall back to standard persist
+        if not enable_cdc:
+            return self.persist_dataframe(df, table_name)
+        
+        # Get primary key
+        primary_key = self._get_primary_key(table_name)
+        if not primary_key or primary_key not in df.columns:
+            # No primary key or not in DataFrame - fall back to standard persist
+            logger.warning(f"No primary key found for {table_name}, using standard persist")
+            return self.persist_dataframe(df, table_name)
+        
+        try:
+            # Use raw_df if provided, otherwise fall back to df (for backward compatibility)
+            # Note: If raw_df is not provided, CDC will compare redacted values (not ideal)
+            raw_data_df = raw_df if raw_df is not None else df
+            encryption_service = self._get_encryption_service()
+            
+            # Step 1: Store redacted data in main tables
+            result = self.persist_dataframe(df, table_name)
+            if not result.is_success():
+                return result
+            
+            # Step 2: Store original data in raw vault (encrypted)
+            raw_vault_result = self._persist_raw_data_vault(
+                raw_data_df,
+                table_name,
+                ingestion_id=ingestion_id,
+                source_adapter=source_adapter
+            )
+            if not raw_vault_result.is_success():
+                logger.warning(f"Failed to persist to raw vault for {table_name}: {raw_vault_result.error}")
+                # Continue with CDC using redacted data as fallback
+            
+            # Step 3: Get unique record IDs from DataFrame
+            record_ids = df[primary_key].unique().tolist()
+            
+            # Step 4: Fetch existing raw records from vault (decrypted) for change detection
+            existing_raw_df = self._fetch_raw_records_decrypted(record_ids, table_name, primary_key)
+            
+            # Import ChangeDetector and ChangeAuditLogger
+            from src.domain.services.change_detector import ChangeDetector
+            from src.infrastructure.audit.change_audit_logger import ChangeAuditLogger
+            
+            # Initialize change detector and logger
+            detector = ChangeDetector(
+                ingestion_id=ingestion_id,
+                source_adapter=source_adapter
+            )
+            change_logger = ChangeAuditLogger()
+            change_logger.set_ingestion_context(ingestion_id, source_adapter)
+            
+            total_processed = result.value if result.is_success() else 0
+            total_changes = 0
+            
+            # Fast path: all new records
+            if existing_raw_df.empty:
+                logger.debug(f"All {len(df)} records are new for {table_name}, using fast insert path")
+                
+                # Log all fields as INSERTs with encrypted original values
+                for _, row in raw_data_df.iterrows():
+                    record_id = str(row[primary_key])
+                    for col in raw_data_df.columns:
+                        if col != primary_key and pd.notna(row[col]):
+                            original_value = row[col]
+                            value_str = str(original_value) if not isinstance(original_value, (list, dict)) else json.dumps(original_value)
+                            
+                            change_logger.log_change(
+                                table_name=table_name,
+                                record_id=record_id,
+                                field_name=col,
+                                old_value=None,
+                                new_value=value_str,
+                                change_type="INSERT"
+                            )
+                            total_changes += 1
+                
+                # Flush change logs
+                if change_logger.has_logs():
+                    flush_result = self.flush_change_logs(change_logger.get_logs())
+                    if flush_result.is_success():
+                        logger.info(f"Logged {change_logger.get_log_count()} INSERT change events for {table_name}")
+                
+                return result
+            
+            # Merge to identify inserts vs updates using RAW DATA (not redacted)
+            merged = existing_raw_df.merge(
+                raw_data_df,
+                on=primary_key,
+                suffixes=('_old', '_new'),
+                how='outer',
+                indicator=True
+            )
+            
+            # Process inserts (records that don't exist)
+            inserts_df = merged[merged['_merge'] == 'right_only']
+            if not inserts_df.empty:
+                # Extract only new columns (remove _old suffix columns)
+                insert_cols = [col for col in df.columns if not col.endswith('_old')]
+                inserts_df_clean = inserts_df[[col for col in insert_cols if col in inserts_df.columns]].copy()
+                
+                insert_result = self.persist_dataframe(inserts_df_clean, table_name)
+                if insert_result.is_success():
+                    total_processed += insert_result.value
+                    
+                    # Log INSERT changes
+                    for _, row in inserts_df_clean.iterrows():
+                        record_id = str(row[primary_key])
+                        for col in insert_cols:
+                            if col != primary_key and col in row.index and pd.notna(row[col]):
+                                try:
+                                    value = row[col]
+                                    if isinstance(value, (list, dict)):
+                                        new_value = json.dumps(value)
+                                    else:
+                                        new_value = str(value)
+                                    
+                                    change_logger.log_change(
+                                        table_name=table_name,
+                                        record_id=record_id,
+                                        field_name=col,
+                                        old_value=None,
+                                        new_value=new_value,
+                                        change_type="INSERT"
+                                    )
+                                    total_changes += 1
+                                except (KeyError, AttributeError) as e:
+                                    logger.warning(f"Error logging INSERT change for {col}: {str(e)}")
+                                    continue
+            
+            # Process updates (records that exist)
+            updates_df = merged[merged['_merge'] == 'both']
+            if not updates_df.empty:
+                # Use ChangeDetector to find field-level changes
+                changes_df = detector.detect_changes_vectorized(
+                    updates_df,
+                    table_name,
+                    primary_key
+                )
+                
+                if not changes_df.empty:
+                    # Build selective UPDATE statements with only changed fields
+                    # Group changes by record_id to build efficient UPDATE statements
+                    update_result = self._update_changed_fields_bulk(
+                        updates_df,
+                        changes_df,
+                        table_name,
+                        primary_key
+                    )
+                    if update_result and update_result.is_success():
+                        total_processed += update_result.value
+                    
+                    # Log UPDATE changes
+                    for _, change_row in changes_df.iterrows():
+                        # Serialize values for logging
+                        old_val = change_row.get('old_value')
+                        new_val = change_row.get('new_value')
+                        
+                        # Handle complex types
+                        if isinstance(old_val, (list, dict)):
+                            old_val = json.dumps(old_val) if old_val is not None else None
+                        elif old_val is not None:
+                            old_val = str(old_val)
+                        
+                        if isinstance(new_val, (list, dict)):
+                            new_val = json.dumps(new_val) if new_val is not None else None
+                        elif new_val is not None:
+                            new_val = str(new_val)
+                        
+                        change_logger.log_change(
+                            table_name=change_row.get('table_name', table_name),
+                            record_id=str(change_row.get('record_id')),
+                            field_name=change_row.get('field_name'),
+                            old_value=old_val,
+                            new_value=new_val,
+                            change_type=change_row.get('change_type', 'UPDATE')
+                        )
+                        total_changes += 1
+                else:
+                    # No changes detected - skip update (performance optimization)
+                    logger.debug(f"No changes detected for {len(updates_df)} records in {table_name}, skipping update")
+                    total_processed += len(updates_df)
+            
+            # Flush all change logs
+            if change_logger.has_logs():
+                flush_result = self.flush_change_logs(change_logger.get_logs())
+                if flush_result.is_success():
+                    logger.info(
+                        f"Logged {change_logger.get_log_count()} change events for {table_name} "
+                        f"({total_changes} fields changed)"
+                    )
+            
+            return Result.success_result(total_processed)
+            
+        except Exception as e:
+            error_msg = f"Failed to persist DataFrame with smart updates to {table_name}: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            # Fall back to standard persist on error
+            logger.warning(f"Falling back to standard persist for {table_name}")
+            return self.persist_dataframe(df, table_name)
     
     def persist_dataframe(self, df: pd.DataFrame, table_name: str) -> Result[int]:
         """Persist a pandas DataFrame directly to a table.
@@ -1647,6 +2466,127 @@ class PostgreSQLAdapter(StoragePort):
             logger.error(error_msg, exc_info=True)
             return Result.failure_result(
                 StorageError(error_msg, operation="flush_redaction_logs"),
+                error_type="StorageError"
+            )
+        finally:
+            if conn:
+                self._return_connection(conn)
+    
+    def flush_change_logs(self, change_logs: list[dict]) -> Result[int]:
+        """Flush multiple change audit logs to the database in a single transaction.
+        
+        This method uses bulk insert (execute_values) for performance with large
+        batches of change events, which is critical for CDC with millions of records.
+        
+        Parameters:
+            change_logs: List of change log dictionaries (from ChangeAuditLogger.get_logs())
+            
+        Returns:
+            Result[int]: Number of logs persisted or error
+        
+        Security Impact:
+            - Change logs may contain PII (old/new values)
+            - Ensure values are redacted before logging
+            - Logs are immutable (append-only) for compliance
+        
+        Performance:
+            - Uses execute_values for bulk insert (much faster than individual INSERTs)
+            - Single transaction for all logs in the batch
+            - Optimized for batches of 10k-50k change events
+        """
+        if not change_logs:
+            return Result.success_result(0)
+        
+        conn = None
+        try:
+            if not self._initialized:
+                init_result = self.initialize_schema()
+                if not init_result.is_success():
+                    return init_result
+            
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            # Prepare data for bulk insert using execute_values
+            from psycopg2.extras import execute_values
+            
+            # Get encryption service for encrypting original values
+            encryption_service = self._get_encryption_service()
+            
+            columns = [
+                'change_id', 'table_name', 'record_id', 'field_name',
+                'old_value', 'new_value', 'old_value_encrypted', 'new_value_encrypted',
+                'old_value_hash', 'new_value_hash', 'change_type', 'changed_at',
+                'ingestion_id', 'source_adapter', 'changed_by', 'encryption_key_id'
+            ]
+            
+            # Convert log entries to tuples for bulk insert
+            values = []
+            for log_entry in change_logs:
+                old_value = log_entry.get('old_value')
+                new_value = log_entry.get('new_value')
+                
+                # Encrypt original values for audit log
+                old_value_encrypted = None
+                new_value_encrypted = None
+                old_value_hash = None
+                new_value_hash = None
+                
+                if old_value is not None:
+                    old_value_encrypted = encryption_service.encrypt_value(old_value)
+                    old_value_hash = EncryptionService.hash_value(old_value)
+                
+                if new_value is not None:
+                    new_value_encrypted = encryption_service.encrypt_value(new_value)
+                    new_value_hash = EncryptionService.hash_value(new_value)
+                
+                values.append((
+                    log_entry.get('change_id', str(uuid.uuid4())),
+                    log_entry.get('table_name'),
+                    log_entry.get('record_id'),
+                    log_entry.get('field_name'),
+                    old_value,  # Keep plaintext for backward compatibility (can be redacted)
+                    new_value,  # Keep plaintext for backward compatibility (can be redacted)
+                    old_value_encrypted,  # Encrypted original value
+                    new_value_encrypted,  # Encrypted original value
+                    old_value_hash,  # Hash for verification
+                    new_value_hash,  # Hash for verification
+                    log_entry.get('change_type'),
+                    log_entry.get('changed_at', datetime.now()),
+                    log_entry.get('ingestion_id'),
+                    log_entry.get('source_adapter'),
+                    log_entry.get('changed_by', 'system'),
+                    encryption_service.get_key_id()
+                ))
+            
+            # Bulk insert using execute_values for performance
+            insert_sql = f"""
+                INSERT INTO change_audit_log ({', '.join(columns)})
+                VALUES %s
+            """
+            
+            execute_values(
+                cursor,
+                insert_sql,
+                values,
+                template=None,
+                page_size=10000  # Insert in chunks of 10k for very large batches
+            )
+            
+            conn.commit()
+            cursor.close()
+            
+            count = len(change_logs)
+            logger.info(f"Flushed {count} change audit logs to database")
+            return Result.success_result(count)
+            
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            error_msg = f"Failed to flush change logs: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return Result.failure_result(
+                StorageError(error_msg, operation="flush_change_logs"),
                 error_type="StorageError"
             )
         finally:

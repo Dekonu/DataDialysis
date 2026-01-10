@@ -28,14 +28,14 @@ services:
       dockerfile: Dockerfile
     container_name: datadialysis-api
     environment:
-      # Database configuration
-      DB_TYPE: postgresql
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: ${POSTGRES_DB:-datadialysis}
-      DB_USER: ${POSTGRES_USER:-datadialysis}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-datadialysis}
-      DB_SSL_MODE: prefer
+      # Database configuration (using DD_ prefix as expected by config_manager)
+      DD_DB_TYPE: postgresql
+      DD_DB_HOST: postgres
+      DD_DB_PORT: 5432
+      DD_DB_NAME: ${POSTGRES_DB:-datadialysis}
+      DD_DB_USER: ${POSTGRES_USER:-datadialysis}
+      DD_DB_PASSWORD: ${POSTGRES_PASSWORD:-datadialysis}
+      DD_DB_SSL_MODE: prefer
       
       # API configuration
       API_HOST: 0.0.0.0
@@ -51,7 +51,10 @@ services:
       ENABLE_HSTS: ${ENABLE_HSTS:-false}
       
       # CORS (adjust for production)
+      # Set CORS_ALLOW_ALL=true for EC2/cloud deployments (less secure, for dev/testing)
+      # Or set CORS_ORIGINS to specific origins: http://<EC2_IP>:3000,http://<DOMAIN>:3000
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      CORS_ALLOW_ALL: ${CORS_ALLOW_ALL:-false}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -72,10 +75,14 @@ services:
     build:
       context: ./dashboard-frontend
       dockerfile: Dockerfile
+      args:
+        # Build-time args (embedded in Next.js bundle)
+        # For EC2: Set these to your EC2 public IP or domain
+        # Example: NEXT_PUBLIC_API_URL=http://<EC2_IP>:8000
+        # IMPORTANT: These must be set at BUILD time, not runtime
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://api:8000}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://ec2-54-183-145-65.us-west-1.compute.amazonaws.com:8000}
     container_name: datadialysis-frontend
-    environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000}
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     depends_on:

@@ -6,9 +6,47 @@ import type {
   AuditLogsResponse,
   RedactionLogsResponse,
   CircuitBreakerStatus,
+  ChangeHistoryResponse,
+  ChangeSummary,
+  RecordChangeHistoryResponse,
 } from '@/types/api';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// Extend Window interface for runtime configuration
+interface WindowWithConfig extends Window {
+  __API_URL__?: string;
+  __WS_URL__?: string;
+}
+
+// Get API URL at runtime - works for both build-time and runtime configuration
+// Priority: window.__API_URL__ (runtime) > NEXT_PUBLIC_API_URL (build-time) > default
+function getApiBaseUrl(): string {
+  // Runtime configuration (set via window object or script tag)
+  if (typeof window !== 'undefined') {
+    const win = window as WindowWithConfig;
+    if (win.__API_URL__) {
+      return win.__API_URL__;
+    }
+  }
+  
+  // Build-time configuration
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    return process.env.NEXT_PUBLIC_API_URL;
+  }
+  
+  // Auto-detect from current host (for same-origin deployments)
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    // If accessing from EC2, use the same hostname but port 8000
+    if (host && host !== 'localhost' && host !== '127.0.0.1') {
+      return `http://${host}:8000`;
+    }
+  }
+  
+  // Default fallback
+  return 'http://localhost:8000';
+}
+
+const API_BASE_URL = getApiBaseUrl();
 
 export interface HealthResponse {
   status: 'healthy' | 'degraded' | 'unhealthy';
@@ -25,19 +63,28 @@ export async function apiRequest<T>(
   endpoint: string,
   options?: RequestInit
 ): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
-  });
+  try {
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options?.headers,
+      },
+    });
 
-  if (!response.ok) {
-    throw new Error(`API error: ${response.statusText}`);
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => response.statusText);
+      throw new Error(`API error: ${response.status} ${errorText}`);
+    }
+
+    return response.json();
+  } catch (error) {
+    // Re-throw with more context if it's a network error
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Failed to connect to ${API_BASE_URL}${endpoint}`);
+    }
+    throw error;
   }
-
-  return response.json();
 }
 
 export const api = {
@@ -120,6 +167,86 @@ export const api = {
   },
   circuitBreaker: {
     status: () => apiRequest<CircuitBreakerStatus>('/api/circuit-breaker/status'),
+  },
+  changeHistory: {
+    list: (params?: {
+      limit?: number;
+      offset?: number;
+      table_name?: string;
+      record_id?: string;
+      field_name?: string;
+      change_type?: 'INSERT' | 'UPDATE';
+      start_date?: string;
+      end_date?: string;
+      ingestion_id?: string;
+      source_adapter?: string;
+      sort_by?: string;
+      sort_order?: 'ASC' | 'DESC';
+    }) => {
+      const searchParams = new URLSearchParams();
+      if (params) {
+        Object.entries(params).forEach(([key, value]) => {
+          if (value !== undefined && value !== null) {
+            searchParams.append(key, String(value));
+          }
+        });
+      }
+      const query = searchParams.toString();
+      return apiRequest<ChangeHistoryResponse>(`/api/change-history${query ? `?${query}` : ''}`);
+    },
+    summary: (params?: {
+      time_range?: TimeRange;
+      table_name?: string;
+    }) => {
+      const searchParams = new URLSearchParams();
+      if (params) {
+        Object.entries(params).forEach(([key, value]) => {
+          if (value !== undefined && value !== null) {
+            searchParams.append(key, String(value));
+          }
+        });
+      }
+      const query = searchParams.toString();
+      return apiRequest<ChangeSummary>(`/api/change-history/summary${query ? `?${query}` : ''}`);
+    },
+    record: (tableName: string, recordId: string, params?: {
+      limit?: number;
+    }) => {
+      const searchParams = new URLSearchParams();
+      if (params) {
+        Object.entries(params).forEach(([key, value]) => {
+          if (value !== undefined && value !== null) {
+            searchParams.append(key, String(value));
+          }
+        });
+      }
+      const query = searchParams.toString();
+      return apiRequest<RecordChangeHistoryResponse>(
+        `/api/change-history/record/${tableName}/${recordId}${query ? `?${query}` : ''}`
+      );
+    },
+    export: (params: {
+      format: 'json' | 'csv';
+      table_name?: string;
+      start_date?: string;
+      end_date?: string;
+      change_type?: 'INSERT' | 'UPDATE';
+    }) => {
+      const searchParams = new URLSearchParams();
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) {
+          searchParams.append(key, String(value));
+        }
+      });
+      return fetch(`${API_BASE_URL}/api/change-history/export?${searchParams.toString()}`).then(
+        (response) => {
+          if (!response.ok) {
+            throw new Error(`Export failed: ${response.statusText}`);
+          }
+          return response.blob();
+        }
+      );
+    },
   },
 };
 

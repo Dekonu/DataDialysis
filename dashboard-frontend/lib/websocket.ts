@@ -12,8 +12,23 @@ import type {
   CircuitBreakerStatus,
 } from '@/types/api';
 
+// Extend Window interface for runtime configuration
+interface WindowWithConfig extends Window {
+  __API_URL__?: string;
+  __WS_URL__?: string;
+}
+
 // Determine WebSocket URL based on API URL
 const getWebSocketUrl = (): string => {
+  // Runtime configuration (set via window object)
+  if (typeof window !== 'undefined') {
+    const win = window as WindowWithConfig;
+    if (win.__WS_URL__) {
+      return win.__WS_URL__;
+    }
+  }
+  
+  // Build-time configuration
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
   
   // Convert http:// to ws:// and https:// to wss://
@@ -157,7 +172,7 @@ export class WebSocketClient {
       }
     };
 
-    this.ws.onerror = (error) => {
+    this.ws.onerror = () => {
       // WebSocket error event doesn't provide detailed error info
       // The actual error will be available in onclose event
       console.warn('WebSocket error event triggered. Connection may have failed.');
