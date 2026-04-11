@@ -4,17 +4,15 @@
 
 **A production-ready, security-first data pipeline for ingesting clinical and sensitive data with automatic PII redaction, schema validation, and real-time observability.**
 
+Inspired by six years building clinical data pipelines for FDA submissions—this work tackles **untrusted clinical feeds** (XML, CSV, JSON) where validation and redaction must complete before data reaches storage.
+
+**Benchmarks** ([`benchmark_results.csv`](benchmark_results.csv), happy-path runs): up to **~662 records/sec** (JSON, ~3 MB); streaming XML **~63 records/sec** (~3 MB file); CSV **~167 records/sec**; **100%** success rate across those runs. Streaming ingestion is built for **100MB+** XML without loading the whole file into RAM. **Roadmap:** larger-volume benchmark runs are planned—see [Performance & Benchmarking](#performance--benchmarking).
+
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 </div>
-
----
-
-## About This Project
-
-Data-Dialysis is a **portfolio project** demonstrating production-grade software engineering: Hexagonal Architecture, security-first design (HIPAA/GDPR), streaming data pipelines, and a full-stack observability dashboard. It showcases current industry practices and technologies—Pydantic V2, FastAPI, Next.js App Router, TypeScript, DuckDB, WebSockets—applied to a realistic clinical data ingestion problem with PII redaction, change data capture, and circuit breakers.
 
 ---
 
@@ -29,9 +27,9 @@ Data-Dialysis is a **production-grade data ingestion system** that implements He
 - **Quantified performance**: Academic-style benchmark suite (CSV/JSON/XML, multiple sizes) with automated visualizations (throughput, memory, latency, format comparison)
 
 **Key technical achievements:**
-- Processes **100MB+ XML files** with constant memory (~50–100MB peak) via streaming
+- **Streaming XML** for large files (100MB+ supported; bounded memory via streaming—see `docs/XML_STREAMING_DESIGN.md` and benchmarks for measured throughput on multi-MB files)
 - **Verify-then-load** pipeline: data cannot reach persistence without passing validation and redaction
-- **Benchmark suite** with throughput, memory profiling, batch statistics, and publication-quality charts
+- **Benchmark suite** with throughput, memory profiling, batch statistics, and publication-quality charts (`benchmark_results.csv`, `benchmark_visualizations/`)
 
 ---
 
@@ -41,7 +39,7 @@ Data-Dialysis is a **production-grade data ingestion system** that implements He
 
 ```bash
 # Clone and enter project
-cd DataDialysis
+cd data-dialysis
 
 # Create virtual environment (recommended)
 python -m venv .venv
@@ -146,6 +144,8 @@ The **`performance_benchmark/`** suite provides repeatable, multi-format evaluat
 - **Formats**: CSV, JSON, XML (configurable sizes, e.g. 1MB–100MB+)
 - **Metrics**: Throughput (records/s, MB/s), peak/avg memory, processing/upload/ingestion times, batch stats, success rate
 - **Output**: `benchmark_results.csv` plus `benchmark_visualizations/` (throughput vs size, memory efficiency, format comparison, scalability, heatmaps, etc.)
+
+**Roadmap:** the suite will be extended with **larger-volume** benchmark runs (more data and larger files) so published numbers better reflect production-scale workloads.
 
 ```bash
 # From project root (with test data and xml_config.json in place)
@@ -255,21 +255,15 @@ for result in adapter.ingest("data/patients.csv"):
 
 ---
 
-## 🤝 Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Contributions should include tests (including adversarial cases where relevant), preserve Hexagonal boundaries, and document security impact where applicable.
-
----
-
 ## 📄 License
 
 See [LICENSE](LICENSE).
 
 ---
 
-## Portfolio & Skills Demonstrated
+## Engineering focus
 
-This project illustrates practices and technologies relevant to **mid- to senior-level** roles in data engineering, backend services, and platform/security-aware applications:
+This codebase emphasizes practices and technologies common in **data engineering, backend services, and security-aware platforms**:
 
 - **Architecture**: Hexagonal/ports-and-adapters, clear boundaries, testability  
 - **Security**: Threat-aware design, PII handling, secure parsing, circuit breakers, audit trails  
