@@ -8,7 +8,7 @@ This document describes the comprehensive, academic-quality performance benchmar
 
 The benchmarking suite serves multiple purposes:
 
-1. **Academic Evaluation**: Provides quantitative evidence of system performance for portfolio/research purposes
+1. **Academic Evaluation**: Provides quantitative evidence of system performance for research and reproducible performance review
 2. **Performance Validation**: Ensures system meets performance requirements
 3. **Optimization Guidance**: Identifies bottlenecks and optimization opportunities
 4. **Comparative Analysis**: Enables comparison across configurations, formats, and databases

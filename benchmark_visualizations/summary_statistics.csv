@@ -1,0 +1,6 @@
+,records_per_second,records_per_second,records_per_second,records_per_second,peak_memory_mb,peak_memory_mb,peak_memory_mb,peak_memory_mb,memory_efficiency_mb_per_record,memory_efficiency_mb_per_record,success_rate,success_rate,total_time_seconds,total_time_seconds
+,mean,std,min,max,mean,std,min,max,mean,std,mean,min,mean,std
+adapter_type,,,,,,,,,,,,,,
+csv,166.48,1.13,165.58,167.75,204.32,35.04,166.88,236.32,0.07,0.03,1.0,1.0,19.41,9.76
+json,563.68,154.11,386.04,661.72,284.5,14.87,271.16,300.54,0.06,0.03,1.0,1.0,9.19,2.55
+xml,63.72,1.38,62.65,65.28,352.23,27.0,333.11,383.11,0.18,0.1,1.0,1.0,35.92,18.6
