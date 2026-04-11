@@ -6,7 +6,7 @@
 
 Inspired by six years building clinical data pipelines for FDA submissions—this work tackles **untrusted clinical feeds** (XML, CSV, JSON) where validation and redaction must complete before data reaches storage.
 
-**Benchmarks** ([`benchmark_results.csv`](benchmark_results.csv), happy-path runs): up to **~662 records/sec** (JSON, ~3 MB); streaming XML **~63 records/sec** (~3 MB file); CSV **~167 records/sec**; **100%** success rate across those runs. Streaming ingestion is built for **100MB+** XML without loading the whole file into RAM (see [Performance & Benchmarking](#performance--benchmarking)).
+**Benchmarks** ([`benchmark_results.csv`](benchmark_results.csv), happy-path runs): up to **~662 records/sec** (JSON, ~3 MB); streaming XML **~63 records/sec** (~3 MB file); CSV **~167 records/sec**; **100%** success rate across those runs. Streaming ingestion is built for **100MB+** XML without loading the whole file into RAM (see [Performance & Benchmarking](#performance--benchmarking)). **Roadmap:** larger-volume benchmark runs are planned—see [Performance & Benchmarking](#performance--benchmarking).
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -144,6 +144,8 @@ The **`performance_benchmark/`** suite provides repeatable, multi-format evaluat
 - **Formats**: CSV, JSON, XML (configurable sizes, e.g. 1MB–100MB+)
 - **Metrics**: Throughput (records/s, MB/s), peak/avg memory, processing/upload/ingestion times, batch stats, success rate
 - **Output**: `benchmark_results.csv` plus `benchmark_visualizations/` (throughput vs size, memory efficiency, format comparison, scalability, heatmaps, etc.)
+
+**Roadmap:** the suite will be extended with **larger-volume** benchmark runs (more data and larger files) so published numbers better reflect production-scale workloads.
 
 ```bash
 # From project root (with test data and xml_config.json in place)
