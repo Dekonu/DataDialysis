@@ -6,7 +6,7 @@
 
 Inspired by six years building clinical data pipelines for FDA submissions—this work tackles **untrusted clinical feeds** (XML, CSV, JSON) where validation and redaction must complete before data reaches storage.
 
-**Benchmarks** ([`benchmark_results.csv`](benchmark_results.csv), happy-path runs): up to **~662 records/sec** (JSON, ~3 MB); streaming XML **~63 records/sec** (~3 MB file); CSV **~167 records/sec**; **100%** success rate across those runs. Streaming ingestion is built for **100MB+** XML without loading the whole file into RAM (see [Performance & Benchmarking](#performance--benchmarking)). **Roadmap:** larger-volume benchmark runs are planned—see [Performance & Benchmarking](#performance--benchmarking).
+**Benchmarks** ([`benchmark_results.csv`](benchmark_results.csv), happy-path runs): up to **~662 records/sec** (JSON, ~3 MB); streaming XML **~63 records/sec** (~3 MB file); CSV **~167 records/sec**; **100%** success rate across those runs. Streaming ingestion is built for **100MB+** XML without loading the whole file into RAM. **Roadmap:** larger-volume benchmark runs are planned—see [Performance & Benchmarking](#performance--benchmarking).
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -39,7 +39,7 @@ Data-Dialysis is a **production-grade data ingestion system** that implements He
 
 ```bash
 # Clone and enter project
-cd DataDialysis
+cd data-dialysis
 
 # Create virtual environment (recommended)
 python -m venv .venv
@@ -252,12 +252,6 @@ for result in adapter.ingest("data/patients.csv"):
     else:
         print(result.error)
 ```
-
----
-
-## 🤝 Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Contributions should include tests (including adversarial cases where relevant), preserve Hexagonal boundaries, and document security impact where applicable.
 
 ---
 
