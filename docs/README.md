@@ -60,6 +60,10 @@ These documents serve different purposes:
 3. **Implementation Specifications** - Detail technical implementation approaches
 4. **Security Analysis** - Document security considerations and compliance requirements
 
+## 🧭 Project walkthrough
+
+- **[PROJECT_WALKTHROUGH.md](PROJECT_WALKTHROUGH.md)** — Guided tour of before/after behavior, `IngestionPipeline` flags, modularity (pydeps), validation rejections, configuration, and presentation hygiene (synthetic data only).
+
 ## 📖 Reading Guide
 
 **For Academic Review:**
