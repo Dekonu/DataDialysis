@@ -18,6 +18,7 @@ Architecture:
 
 import logging
 import uuid
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any
@@ -117,6 +118,7 @@ class DuckDBAdapter(StoragePort):
         
         self.config = config or {}
         self._connection: Optional[duckdb.DuckDBPyConnection] = None
+        self._connection_lock = threading.RLock()
         self._initialized = False
         
         # Validate db_path to prevent path traversal
@@ -138,16 +140,17 @@ class DuckDBAdapter(StoragePort):
             - Connection is created lazily to avoid unnecessary resource usage
             - Connection is reused for performance
         """
-        if self._connection is None:
-            try:
-                self._connection = duckdb.connect(self.db_path)
-                logger.info(f"Connected to DuckDB database: {self.db_path}")
-            except Exception as e:
-                raise StorageError(
-                    f"Failed to connect to DuckDB: {str(e)}",
-                    operation="connect",
-                    details={"db_path": self.db_path}
-                )
+        with self._connection_lock:
+            if self._connection is None:
+                try:
+                    self._connection = duckdb.connect(self.db_path)
+                    logger.info(f"Connected to DuckDB database: {self.db_path}")
+                except Exception as e:
+                    raise StorageError(
+                        f"Failed to connect to DuckDB: {str(e)}",
+                        operation="connect",
+                        details={"db_path": self.db_path}
+                    )
         return self._connection
     
     def initialize_schema(self) -> Result[None]:
@@ -168,6 +171,10 @@ class DuckDBAdapter(StoragePort):
             - Indexes optimize query performance
         """
         try:
+            self._connection_lock.acquire()
+            if self._initialized:
+                self._connection_lock.release()
+                return Result.success_result(None)
             conn = self._get_connection()
             
             # Create patients table
@@ -312,9 +319,14 @@ class DuckDBAdapter(StoragePort):
             self._initialized = True
             logger.info("Database schema initialized successfully")
             
+            self._connection_lock.release()
             return Result.success_result(None)
             
         except Exception as e:
+            try:
+                self._connection_lock.release()
+            except RuntimeError:
+                pass
             error_msg = f"Failed to initialize schema: {str(e)}"
             logger.error(error_msg, exc_info=True)
             return Result.failure_result(
