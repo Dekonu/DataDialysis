@@ -63,6 +63,7 @@ Thumbs.db
 reports/
 *.db
 *.duckdb
+*.duckdb.wal
 *.sqlite
 *.sqlite3
 
