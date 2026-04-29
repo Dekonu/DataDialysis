@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "jgor", email = ""}
+    {name = "jgor"}
 ]
 keywords = [
     "data-pipeline",
@@ -76,4 +76,8 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
 

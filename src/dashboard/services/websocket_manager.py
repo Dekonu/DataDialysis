@@ -70,6 +70,8 @@ class ConnectionManager:
         """
         try:
             await websocket.send_json(message.model_dump(mode="json"))
+        except WebSocketDisconnect:
+            raise
         except Exception as e:
             logger.error(f"Error sending personal message: {str(e)}", exc_info=True)
             raise

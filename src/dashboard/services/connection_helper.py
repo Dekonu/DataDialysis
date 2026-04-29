@@ -21,16 +21,17 @@ class ConnectionWrapper:
     where execute() is called directly on the connection object.
     """
     
-    def __init__(self, conn: Any, is_postgresql: bool = False):
+    def __init__(self, conn: Any, uses_cursor: bool = False, connection_lock: Optional[Any] = None):
         """Initialize connection wrapper.
         
         Parameters:
             conn: Raw database connection
-            is_postgresql: Whether this is a PostgreSQL connection (needs cursors)
+            uses_cursor: Whether this connection requires cursors
         """
         self._conn = conn
-        self._is_postgresql = is_postgresql
+        self._uses_cursor = uses_cursor
         self._current_cursor: Optional[Any] = None
+        self._connection_lock = connection_lock
     
     def execute(self, query: str, params: Optional[list] = None):
         """Execute a query and return a result object.
@@ -42,7 +43,7 @@ class ConnectionWrapper:
         Returns:
             Result object with fetchone() and fetchall() methods
         """
-        if self._is_postgresql:
+        if self._uses_cursor:
             # PostgreSQL: create cursor, execute, return cursor
             # Convert ? placeholders to %s for PostgreSQL compatibility
             pg_query = query.replace('?', '%s')
@@ -57,10 +58,18 @@ class ConnectionWrapper:
             return self._current_cursor
         else:
             # DuckDB: execute directly on connection
-            if params:
-                return self._conn.execute(query, params)
+            connection_lock = self._connection_lock
+            if connection_lock:
+                with connection_lock:
+                    if params:
+                        result = self._conn.execute(query, params)
+                    else:
+                        result = self._conn.execute(query)
+            elif params:
+                result = self._conn.execute(query, params)
             else:
-                return self._conn.execute(query)
+                result = self._conn.execute(query)
+            return result
     
     def close(self):
         """Close any open cursors."""
@@ -95,13 +104,20 @@ def get_db_connection(storage: StoragePort):
     wrapper = None
     try:
         if hasattr(storage, '_get_connection'):
-            raw_conn = storage._get_connection()
-            conn = raw_conn
+            base_conn = storage._get_connection()
+            conn = base_conn
             
-            # Check if this is PostgreSQL (has connection_params attribute)
-            is_postgresql = hasattr(storage, 'connection_params')
+            # Check if this adapter requires DB-API cursors. DuckDB gets a
+            # duplicate cursor/connection so concurrent dashboard reads do not
+            # share one open result set across threads.
+            uses_cursor = hasattr(storage, 'connection_params')
+            query_conn = base_conn
+            connection_lock = getattr(storage, '_connection_lock', None)
+            if not uses_cursor and hasattr(base_conn, 'cursor'):
+                query_conn = base_conn.cursor()
+                connection_lock = None
             
-            wrapper = ConnectionWrapper(raw_conn, is_postgresql=is_postgresql)
+            wrapper = ConnectionWrapper(query_conn, uses_cursor=uses_cursor, connection_lock=connection_lock)
             yield wrapper
         else:
             # For adapters that don't use connection pools (e.g., DuckDB)
